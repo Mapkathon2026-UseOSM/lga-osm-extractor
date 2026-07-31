@@ -23,6 +23,7 @@ from lga_extractor.clean import clean_layers, utm_epsg_for_longitude, resolve_ta
 from lga_extractor.export import export_layers
 from lga_extractor.layers import extract_layers, LayerExtractionError
 from lga_extractor.boundary import resolve_boundary, _validate_and_standardize, BoundaryResolutionError
+from lga_extractor.visualize import build_preview_map, _strip_mapbox_token, _MAPBOX_TOKEN_PATTERN
 
 
 def _dummy_raw_layers():
@@ -377,6 +378,55 @@ def test_validate_and_standardize_display_name_mismatch_warns_not_raises():
     result = _validate_and_standardize(gdf, source="test", lga_name="Akure North", state_name="Ondo")
     assert result["validation_warnings"].iloc[0] is not None
     assert "Akure North" in result["validation_warnings"].iloc[0]
+
+
+def test_strip_mapbox_token_removes_real_token_from_export():
+    """
+    The installed keplergl package bundles a real Mapbox access token
+    directly into its exported HTML (see visualize.py's module-level
+    comment for why) -- this caused a real GitHub push-protection
+    failure during this project's development. This test builds an
+    actual preview map end-to-end and confirms the token pattern is
+    genuinely absent afterward, not just theoretically stripped.
+    """
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        roads = gpd.GeoDataFrame(
+            {"osmid": [1]},
+            geometry=[LineString([(5.2, 7.25), (5.21, 7.26)])],
+            crs="EPSG:32631",
+        )
+        roads.to_file(os.path.join(tmp_dir, "roads.geojson"), driver="GeoJSON")
+
+        html_path = os.path.join(tmp_dir, "preview.html")
+        build_preview_map(output_dir=tmp_dir, html_out=html_path)
+
+        with open(html_path) as f:
+            content = f.read()
+
+        assert not _MAPBOX_TOKEN_PATTERN.search(content), (
+            "A Mapbox token pattern was still found after build_preview_map() -- "
+            "this would fail GitHub push protection again."
+        )
+        assert "</html>" in content, "Stripping the token should not corrupt the HTML file."
+    finally:
+        shutil.rmtree(tmp_dir)
+
+
+def test_strip_mapbox_token_returns_false_when_no_token_present():
+    """
+    _strip_mapbox_token() should report False (nothing to do) rather
+    than erroring when called on a file that has no token -- e.g. one
+    that's already been stripped, or a future keplergl version that no
+    longer bundles a default token.
+    """
+    path = tempfile.mktemp(suffix=".html")
+    with open(path, "w") as f:
+        f.write("<html><body>no token here</body></html>")
+    try:
+        assert _strip_mapbox_token(path) is False
+    finally:
+        os.remove(path)
 
 
 @pytest.mark.integration

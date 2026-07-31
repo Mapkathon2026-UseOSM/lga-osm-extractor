@@ -21,6 +21,7 @@ Requires: pip install keplergl
 """
 
 import os
+import re
 import json
 
 import geopandas as gpd
@@ -46,6 +47,33 @@ _LAYER_FILES = [
     "schools",
 ]
 
+# The installed keplergl package bundles a real (if publicly-scoped)
+# Mapbox access token directly into its exported HTML, regardless of
+# which basemap style is actually configured (confirmed: it's still
+# present even when kepler_config_lga_preview.json's mapStyle points at
+# a free, non-Mapbox CARTO basemap instead of a Mapbox-hosted one --
+# the token appears to be baked into keplergl's bundled JS itself,
+# likely for an unrelated internal feature such as the in-app style
+# switcher, not the actual displayed basemap). This is NOT something
+# this project's config controls. GitHub's push protection correctly
+# flags it as a credential regardless of its public/secret scoping,
+# since it still belongs to a third party.
+#
+# This project's kepler configs (kepler_config_lga_preview.json, and
+# the companion akure-access-dashboard repo's kepler configs) use a
+# free CARTO Positron basemap instead of a Mapbox-hosted style, so the
+# displayed basemap itself never actually depends on this token -- but
+# since the token is embedded regardless of style choice, it must
+# still be stripped explicitly (see _strip_mapbox_token() below) before
+# any export can safely be committed to a public repository.
+#
+# _strip_mapbox_token() removes it after export: since this project's
+# configs use a free CARTO basemap rather than a Mapbox-hosted one (see
+# above), the displayed map is unaffected -- stripping only removes an
+# unused, embedded credential, not anything the basemap actually
+# depends on to render.
+_MAPBOX_TOKEN_PATTERN = re.compile(r"pk\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+")
+
 
 def build_preview_map(output_dir: str, html_out: str = None, height: int = 600) -> "KeplerGl":
     """
@@ -59,7 +87,10 @@ def build_preview_map(output_dir: str, html_out: str = None, height: int = 600) 
         "output/akure_north".
     html_out : str, optional
         If provided, saves a standalone HTML file to this path
-        (self-contained: data + viewer bundled in one file).
+        (self-contained: data + viewer bundled in one file). Any
+        Mapbox access token bundled into the export by the keplergl
+        package itself is automatically stripped before saving -- see
+        _strip_mapbox_token() below for why this matters.
     height : int
         Map height in pixels when rendered in a notebook.
 
@@ -91,8 +122,47 @@ def build_preview_map(output_dir: str, html_out: str = None, height: int = 600) 
     if html_out:
         os.makedirs(os.path.dirname(html_out) or ".", exist_ok=True)
         kepler_map.save_to_html(file_name=html_out)
+        _strip_mapbox_token(html_out)
 
     return kepler_map
+
+
+def _strip_mapbox_token(html_path: str) -> bool:
+    """
+    Remove any bundled Mapbox access token from an exported kepler.gl
+    HTML file, in place.
+
+    See the module-level comment above _MAPBOX_TOKEN_PATTERN for why
+    this is necessary: the installed keplergl package embeds a real
+    Mapbox token into every save_to_html() export regardless of
+    configured basemap style. Stripping it means the exported file is
+    safe to commit to a public repository (verified against GitHub's
+    secret-scanning push protection) with no visual cost, since this
+    project's configs use a free CARTO basemap that doesn't depend on
+    this token to render.
+
+    Parameters
+    ----------
+    html_path : str
+        Path to an HTML file produced by KeplerGl.save_to_html().
+
+    Returns
+    -------
+    bool
+        True if a token was found and removed, False if none was
+        present (e.g. a future keplergl version that no longer bundles
+        one, or a file already stripped).
+    """
+    with open(html_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    stripped, n_replaced = _MAPBOX_TOKEN_PATTERN.subn("", content)
+
+    if n_replaced > 0:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(stripped)
+
+    return n_replaced > 0
 
 
 def _load_config() -> dict:
