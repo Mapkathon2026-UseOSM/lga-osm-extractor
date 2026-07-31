@@ -1,0 +1,11 @@
+osmnx>=1.9
+geopandas>=0.14
+shapely>=2.0
+fiona>=1.9
+pandas>=2.0
+streamlit>=1.32
+leafmap>=0.31
+pytest>=8.0
+
+# Optional, for the kepler.gl preview map (lga_extractor.visualize / --preview flag):
+keplergl>=0.3.2

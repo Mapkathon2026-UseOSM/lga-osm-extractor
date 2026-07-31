@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+output/
+!output/.gitkeep
+*.egg-info/
+.env
+.venv/
+venv/
+.DS_Store

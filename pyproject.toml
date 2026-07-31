@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lga-osm-extractor"
+version = "0.1.0"
+description = "A reusable Python tool for extracting OpenStreetMap data (roads, buildings, waterways, land use, health facilities, schools) for any Nigerian Local Government Area (LGA)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Marvellous (Adeleke Marvellous Ayomide)" }
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Intended Audience :: Science/Research",
+]
+keywords = ["openstreetmap", "osm", "gis", "nigeria", "geospatial", "osmnx"]
+
+dependencies = [
+    "osmnx>=1.9",
+    "geopandas>=0.14",
+    "shapely>=2.0",
+    "fiona>=1.9",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+viz = [
+    "keplergl>=0.3.2",
+]
+app = [
+    "streamlit>=1.32",
+    "leafmap>=0.31",
+]
+dev = [
+    "pytest>=8.0",
+]
+all = [
+    "keplergl>=0.3.2",
+    "streamlit>=1.32",
+    "leafmap>=0.31",
+    "pytest>=8.0",
+]
+
+[project.urls]
+Repository = "https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor"
+"Map<>kathon 2026" = "https://www.useosm.org/"
+
+# Note: cli.py and app.py live at the repository root (not inside the
+# lga_extractor/ package), so they are run directly -- e.g.
+# `python cli.py --lga "Akure North"` -- rather than via an installed
+# console-script entry point.
+
+[tool.setuptools]
+packages = ["lga_extractor"]
+
+# Note: pytest configuration lives in pytest.ini (not here), since pytest
+# prioritizes pytest.ini over pyproject.toml when both are present in the
+# same directory -- keeping it in one place avoids the two silently
+# drifting out of sync.
