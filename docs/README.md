@@ -10,6 +10,6 @@ To generate one:
 python cli.py --lga "Akure North" --state "Ondo" --preview
 ```
 
-This produces `visuals/akure_north_preview.html` — open it in a browser,
+This produces `visuals/akure_north_preview.html`, open it in a browser,
 adjust the view if you like, and take a screenshot (or screen-record a
 short pan/zoom and convert to GIF) into `docs/preview.png` / `.gif`.

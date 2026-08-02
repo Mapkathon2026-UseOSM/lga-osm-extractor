@@ -40,8 +40,7 @@ def extract_lga(
     manual_boundary_path : str, optional
         Path to a manual boundary file to use instead of OSM geocoding.
     strict : bool, default False
-        Controls how a genuine layer-extraction FAILURE is handled --
-        see layers.extract_layers()'s `strict` parameter for the full
+        Controls how a genuine layer-extraction FAILURE is handled, see layers.extract_layers()'s `strict` parameter for the full
         explanation and the distinction between "a layer genuinely
         failed to query" versus "a layer queried successfully but found
         zero features" (the latter never raises, regardless of this
@@ -74,7 +73,7 @@ def extract_lga(
 
     raw_layers = extract_layers(boundary_gdf, tag_config=tag_config, strict=strict)
     warnings = raw_layers.get("_warnings", [])
-    # Fold in the boundary's own soft validation warning (if any -- see
+    # Fold in the boundary's own soft validation warning (if any, see
     # boundary._validate_and_standardize()'s "SOFT check" documentation)
     # alongside per-layer extraction warnings, so both show up together
     # in one place for anyone reviewing this run.
@@ -87,7 +86,7 @@ def extract_lga(
     exported = export_layers(cleaned, output_dir)
 
     # Resolve the CRS the same way clean_layers() did internally, purely
-    # to record it in the run log -- calling this directly (rather than
+    # to record it in the run log, calling this directly (rather than
     # inferring from cleaned layer output) avoids getting a wrong/None
     # answer if the first layer happens to be empty, since
     # _clean_single_layer() returns an empty GeoDataFrame early, before
