@@ -71,7 +71,7 @@ def log_run(
         Shapefiles, that is recorded under "split_layers" in the log.
     target_crs : str, optional
         The projected CRS actually used to clean/export this LGA's
-        layers, e.g. "EPSG:32631", see clean.resolve_target_crs(),
+        layers, e.g. "EPSG:32631" -- see clean.resolve_target_crs(),
         which auto-selects the correct UTM zone based on the boundary's
         location rather than assuming a single fixed zone for all of
         Nigeria. Recorded here so the exact projection used for any

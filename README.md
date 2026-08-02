@@ -81,10 +81,21 @@ pip install -e ".[all]"   # everything above
 Or with conda:
 
 ```bash
-conda env create -f environment.yml
+conda env create -f conda-environment.yml
 conda activate lga_extractor_env
 pip install -e .
 ```
+
+> Note: this file is deliberately named `conda-environment.yml`, not the
+> conventional `environment.yml`. Streamlit Community Cloud auto-detects
+> a root-level `environment.yml` and uses conda to build the deployed
+> app's environment instead of pip + `requirements.txt` -- conda's
+> dependency solver can take a very long time (or effectively hang) on
+> a graph this size with open-ended version constraints, which is what
+> caused this app's deployment to spin indefinitely at "Solving
+> environment" before this rename. Renaming it keeps conda available
+> for local development while ensuring Streamlit Cloud uses the
+> faster, already-verified pip path.
 
 Or, without installing at all, just add the repo to your path:
 
@@ -193,7 +204,7 @@ lga-osm-extractor/
 ├── pyproject.toml             # packaging config, enables `pip install -e .`
 ├── requirements.txt
 ├── requirements-lock.txt      # exact pip-resolved versions, see "Reproducible installs" below
-├── environment.yml
+├── conda-environment.yml
 ├── pytest.ini
 │
 ├── .github/

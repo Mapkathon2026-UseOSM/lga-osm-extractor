@@ -20,7 +20,8 @@ NIGERIA_BBOX = (2.5, 4.0, 15.0, 14.0)
 
 # Plausible LGA area range, in km^2. Nigerian LGAs vary a lot in size
 # (a dense urban LGA can be tens of km^2; some sparse northern LGAs
-# exceed 1000 km^2), so these bounds are intentionally generous, # they're meant to catch "a single building/point was resolved" or "an
+# exceed 1000 km^2), so these bounds are intentionally generous --
+# they're meant to catch "a single building/point was resolved" or "an
 # entire state/the whole country was resolved" (both real failure
 # modes for a geocoding-based lookup), not to flag genuinely unusual
 # but valid LGA shapes.
@@ -57,7 +58,7 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
         passing into feature extraction functions. Carries two extra
         columns: "boundary_source" (where this boundary came from) and
         "validation_warnings" (None, or a semicolon-separated string of
-        non-fatal concerns worth a manual check, see
+        non-fatal concerns worth a manual check -- see
         _validate_and_standardize()'s docstring for what these mean).
 
     Raises
@@ -66,7 +67,7 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
         If no valid boundary geometry could be resolved, or if the
         resolved boundary fails a hard geographic/size sanity check
         (see _validate_and_standardize()) that strongly suggests the
-        wrong place was resolved, and no manual fallback was provided.
+        wrong place was resolved -- and no manual fallback was provided.
     """
     if manual_boundary_path:
         gdf = gpd.read_file(manual_boundary_path)
@@ -106,29 +107,31 @@ def _validate_and_standardize(
 
     Two tiers of check are applied, deliberately different in severity:
 
-    HARD checks (raise BoundaryResolutionError, these indicate the
+    HARD checks (raise BoundaryResolutionError -- these indicate the
     resolution almost certainly picked the wrong place, not just an
     unusual-but-valid LGA):
       - Geometry is missing, invalid, or empty (pre-existing check).
       - The boundary's centroid falls outside Nigeria's approximate
-        bounding box (NIGERIA_BBOX), a strong signal that a
+        bounding box (NIGERIA_BBOX) -- a strong signal that a
         name-collision or unrelated place was resolved instead.
-      - The boundary's area (measured in the auto-selected UTM zone, see clean.resolve_target_crs(), reused here rather than
+      - The boundary's area (measured in the auto-selected UTM zone --
+        see clean.resolve_target_crs(), reused here rather than
         duplicating the UTM-zone logic) falls outside a generously wide
         plausible range for a single Nigerian LGA
-        (MIN/MAX_PLAUSIBLE_LGA_AREA_KM2), catching the specific
+        (MIN/MAX_PLAUSIBLE_LGA_AREA_KM2) -- catching the specific
         failure modes of "a single building/point was resolved" or "an
         entire state/the whole country was resolved."
 
     SOFT checks (recorded in the returned GeoDataFrame's
-    "validation_warnings" column, but do NOT raise, these are worth a
+    "validation_warnings" column, but do NOT raise -- these are worth a
     human glance but are not confident enough to block extraction on
     their own, since Nominatim's display_name formatting varies and
     isn't a reliable enough signal to treat as authoritative):
       - If OSM/Nominatim returned a "display_name" field, check that it
         appears to mention the requested LGA name and (if given) state
         name. A mismatch here is often just Nominatim's naming/
-        abbreviation conventions, not necessarily a wrong resolution, hence a warning, not a failure.
+        abbreviation conventions, not necessarily a wrong resolution --
+        hence a warning, not a failure.
 
     Parameters
     ----------
@@ -206,12 +209,12 @@ def _validate_and_standardize(
         if lga_name and lga_name.split()[0].lower() not in display_name:
             warnings.append(
                 f"Resolved boundary's display name does not obviously mention "
-                f"the requested LGA name '{lga_name}', worth a manual check."
+                f"the requested LGA name '{lga_name}' -- worth a manual check."
             )
         if state_name and state_name.lower() not in display_name:
             warnings.append(
                 f"Resolved boundary's display name does not obviously mention "
-                f"the requested state '{state_name}', worth a manual check."
+                f"the requested state '{state_name}' -- worth a manual check."
             )
 
     gdf = gdf.iloc[[0]].copy()

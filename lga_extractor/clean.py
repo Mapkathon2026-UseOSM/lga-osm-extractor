@@ -11,7 +11,7 @@ import geopandas as gpd
 # Fallback target CRS, used only if no boundary geometry is available
 # to auto-select an appropriate UTM zone from (see
 # utm_epsg_for_longitude() below). EPSG:32631 (UTM Zone 31N) is correct
-# for Southwest Nigeria (including Ondo State) specifically, it is
+# for Southwest Nigeria (including Ondo State) specifically -- it is
 # NOT universally correct for all Nigerian LGAs, since Nigeria spans
 # multiple UTM zones (31N, 32N, 33N) depending on longitude.
 FALLBACK_CRS = "EPSG:32631"
@@ -20,23 +20,6 @@ FALLBACK_CRS = "EPSG:32631"
 # OSM columns vary a lot between queries; this keeps exports
 # predictable and comparable across different LGA extractions.
 KEEP_COLUMNS = ["osmid", "name", "geometry"]
-
-# Layers that downstream consumers (network routing in
-# akure_access.accessibility, isochrone snapping, completeness
-# nearest-neighbor checks) require as Point geometries.
-#
-# OSM tags a facility like a hospital or school EITHER as a single
-# node OR as a full building-outline way/relation (Polygon /
-# MultiPolygon), both are equally valid, common OSM mapping choices
-# for the same real-world facility, the outline just means someone
-# traced the building footprint instead of dropping a single point.
-# Without this collapse step, any facility mapped as an outline
-# silently fails to snap to the routing graph (Polygon has no
-# .x/.y), and every grid cell loses access to that facility entirely, this is exactly what happened to Akure North's 14 health
-# facilities, all mapped as building outlines, which made health
-# access look catastrophically worse than it actually is for that
-# entire LGA. See _collapse_areas_to_points() below.
-POINT_LAYERS = {"health_facilities", "schools"}
 
 
 def utm_epsg_for_longitude(longitude: float, latitude: float = 0.0) -> str:
@@ -52,7 +35,8 @@ def utm_epsg_for_longitude(longitude: float, latitude: float = 0.0) -> str:
     two-digit zone number.
 
     Nigeria spans UTM zones 31N (west, e.g. Lagos/Ondo/Oyo), 32N
-    (central, e.g. Abuja/Kaduna), and 33N (east, e.g. Borno/Adamawa), using a single hardcoded zone for the whole country would distort
+    (central, e.g. Abuja/Kaduna), and 33N (east, e.g. Borno/Adamawa) --
+    using a single hardcoded zone for the whole country would distort
     distance and area calculations for LGAs outside that zone's true
     coverage. This function is what makes extraction correct for any
     Nigerian LGA, not just ones in the zone the tool was originally
@@ -67,7 +51,7 @@ def utm_epsg_for_longitude(longitude: float, latitude: float = 0.0) -> str:
         Latitude in decimal degrees, used only to pick the northern vs.
         southern hemisphere EPSG code. Defaults to 0.0 (northern
         hemisphere code) since Nigeria lies entirely in the northern
-        hemisphere, this parameter exists mainly so this function
+        hemisphere -- this parameter exists mainly so this function
         isn't silently wrong if ever reused for a non-Nigerian LGA.
 
     Returns
@@ -100,7 +84,7 @@ def resolve_target_crs(boundary_gdf: gpd.GeoDataFrame = None) -> str:
     zone that centroid actually falls in via utm_epsg_for_longitude().
     If no boundary is provided (or its geometry is empty/invalid), this
     falls back to FALLBACK_CRS with a printed warning, rather than
-    failing outright, callers that don't have a boundary handy (e.g.
+    failing outright -- callers that don't have a boundary handy (e.g.
     cleaning already-extracted data with no boundary reference) still
     get a usable, if less precise, result.
 
@@ -153,7 +137,7 @@ def clean_layers(layers_dict: dict, boundary_gdf: gpd.GeoDataFrame = None) -> di
         used to auto-select the correct UTM zone for this LGA's actual
         location (see resolve_target_crs()). If not provided, falls
         back to FALLBACK_CRS (EPSG:32631, correct for Southwest Nigeria
-        only), this keeps clean_layers() usable standalone (e.g. in
+        only) -- this keeps clean_layers() usable standalone (e.g. in
         existing tests or scripts) without requiring every caller to
         be updated, while giving pipeline.extract_lga() (which always
         has the boundary on hand) the more accurate, location-aware
@@ -174,16 +158,12 @@ def clean_layers(layers_dict: dict, boundary_gdf: gpd.GeoDataFrame = None) -> di
         if layer_name == "_warnings":
             cleaned[layer_name] = gdf
             continue
-        cleaned[layer_name] = _clean_single_layer(
-            gdf, target_crs, collapse_to_point=(layer_name in POINT_LAYERS)
-        )
+        cleaned[layer_name] = _clean_single_layer(gdf, target_crs)
 
     return cleaned
 
 
-def _clean_single_layer(
-    gdf: gpd.GeoDataFrame, target_crs: str = FALLBACK_CRS, collapse_to_point: bool = False
-) -> gpd.GeoDataFrame:
+def _clean_single_layer(gdf: gpd.GeoDataFrame, target_crs: str = FALLBACK_CRS) -> gpd.GeoDataFrame:
     if gdf.empty:
         return gdf
 
@@ -218,47 +198,13 @@ def _clean_single_layer(
     gdf = gdf.drop_duplicates(subset="geometry")
 
     # Reproject to the resolved target CRS (auto-selected UTM zone, or
-    # the fallback, see resolve_target_crs())
+    # the fallback -- see resolve_target_crs())
     if gdf.crs is None:
         gdf = gdf.set_crs("EPSG:4326")
     gdf = gdf.to_crs(target_crs)
-
-    # For layers that downstream consumers require as points
-    # (POINT_LAYERS), collapse any Polygon/MultiPolygon geometries
-    # (facilities mapped as building outlines in OSM) to their
-    # centroid. Deliberately done AFTER reprojection to a projected/
-    # metric CRS, not before: computing a centroid in a geographic
-    # (lat/lon) CRS distorts the result, the same reasoning already
-    # applied to grid-cell centroids in
-    # akure_access.accessibility.scoring.add_access_times().
-    if collapse_to_point:
-        gdf = _collapse_areas_to_points(gdf)
 
     # Keep only the minimal standardized schema (retain geometry + id + name)
     keep = [c for c in KEEP_COLUMNS if c in gdf.columns]
     gdf = gdf[keep]
 
     return gdf.reset_index(drop=True)
-
-
-def _collapse_areas_to_points(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """
-    Reduce Polygon/MultiPolygon geometries to their centroid, in place
-    within a copy, leaving existing Point geometries untouched.
-
-    Extracts facilities that were mapped as points and facilities that
-    were mapped as building outlines COLLECTIVELY into one uniform
-    Point layer, rather than one tagging convention silently losing
-    every facility mapped the other way. Both are valid, common OSM
-    choices for the same real-world facility, an outline just means
-    someone traced the building footprint instead of dropping a node.
-
-    Must be called on an already-projected (metric) GeoDataFrame; see
-    the call site in _clean_single_layer(), which reprojects before
-    calling this.
-    """
-    gdf = gdf.copy()
-    is_area = gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
-    if is_area.any():
-        gdf.loc[is_area, "geometry"] = gdf.loc[is_area, "geometry"].centroid
-    return gdf

@@ -29,11 +29,11 @@ class LayerExtractionError(Exception):
     """
     Raised when a layer genuinely fails to extract (an Overpass error,
     timeout, network failure, or bad tag configuration) while running
-    in strict mode, see extract_layers()'s `strict` parameter.
+    in strict mode -- see extract_layers()'s `strict` parameter.
 
     This is distinct from a layer legitimately returning zero features
     (a successful query that simply found nothing of that type in the
-    boundary), that is valid data, not a failure, and never raises
+    boundary) -- that is valid data, not a failure, and never raises
     this exception even in strict mode.
     """
     pass
@@ -54,7 +54,7 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
         DEFAULT_TAG_CONFIG if not provided.
     strict : bool, default False
         Controls how a genuine extraction FAILURE (an Overpass error,
-        timeout, network failure, or bad tag configuration, i.e. an
+        timeout, network failure, or bad tag configuration -- i.e. an
         exception raised by the underlying OSM query) is handled:
 
         - False (default, "permissive" mode): the failure is caught,
@@ -69,7 +69,7 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
           silently corrupt downstream analysis without anyone noticing.
 
         Either way, a layer that queries successfully but genuinely
-        finds zero features is NOT treated as a failure, that's valid
+        finds zero features is NOT treated as a failure -- that's valid
         data (and can itself be a meaningful completeness signal), so
         it never raises, and is only ever recorded as a warning.
 
@@ -102,7 +102,7 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
         try:
             gdf = ox.features_from_polygon(polygon, tags)
             if gdf is None or gdf.empty:
-                # A successful query that found nothing, valid data,
+                # A successful query that found nothing -- valid data,
                 # not a failure. Never raises, even in strict mode.
                 warnings.append(f"Layer '{layer_name}' returned no features within the boundary.")
                 gdf = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
