@@ -71,10 +71,10 @@ def export_layers(layers_dict: dict, output_dir: str) -> dict:
         `shapefile_value` is:
           - a single path string, when the layer contains only one
             geometry-type category (the common case, e.g. buildings,
-            health_facilities) -- unchanged from previous behavior.
+            health_facilities), unchanged from previous behavior.
           - a dict of {category: path}, when the layer contains more
             than one geometry-type category (e.g. roads mixing point
-            nodes and line ways) -- one Shapefile per category, since a
+            nodes and line ways), one Shapefile per category, since a
             single Shapefile cannot mix geometry types.
 
         Empty layers are skipped and noted under the "_skipped" key.
@@ -103,13 +103,13 @@ def export_layers(layers_dict: dict, output_dir: str) -> dict:
         categories = _geom_categories_present(gdf)
 
         if len(categories) <= 1:
-            # Single geometry type (or empty) -- export as one Shapefile,
+            # Single geometry type (or empty), export as one Shapefile,
             # same as before.
             shp_path = os.path.join(shp_dir, f"{layer_name}.shp")
             gdf.to_file(shp_path, driver="ESRI Shapefile")
             exported[layer_name] = {"geojson": geojson_path, "shapefile": shp_path}
         else:
-            # Mixed geometry types -- split into one Shapefile per category,
+            # Mixed geometry types, split into one Shapefile per category,
             # since Shapefile cannot store mixed types in a single file.
             shapefile_paths = {}
             for cat in categories:

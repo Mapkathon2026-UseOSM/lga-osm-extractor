@@ -50,7 +50,7 @@ def main():
         "(Overpass timeout, network error, bad tag config) instead of the "
         "default permissive behavior of logging a warning and continuing "
         "with an empty layer. A layer that simply finds zero features "
-        "never raises, even with this flag set -- see extract_layers()'s "
+        "never raises, even with this flag set, see extract_layers()'s "
         "docstring for the distinction. Recommended for CI/automated use.",
     )
 

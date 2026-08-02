@@ -3,8 +3,7 @@ visualize.py
 
 Generates a polished, standalone kepler.gl HTML preview of an
 extracted LGA's OSM layers (roads, buildings, waterways, land use,
-health facilities, schools). This is a visual convenience layer only
--- it does not perform any analysis -- intended to give a quick,
+health facilities, schools). This is a visual convenience layer only, it does not perform any analysis, intended to give a quick,
 shareable look at what was extracted for a given LGA without needing
 GIS software installed.
 
@@ -51,8 +50,7 @@ _LAYER_FILES = [
 # Mapbox access token directly into its exported HTML, regardless of
 # which basemap style is actually configured (confirmed: it's still
 # present even when kepler_config_lga_preview.json's mapStyle points at
-# a free, non-Mapbox CARTO basemap instead of a Mapbox-hosted one --
-# the token appears to be baked into keplergl's bundled JS itself,
+# a free, non-Mapbox CARTO basemap instead of a Mapbox-hosted one, # the token appears to be baked into keplergl's bundled JS itself,
 # likely for an unrelated internal feature such as the in-app style
 # switcher, not the actual displayed basemap). This is NOT something
 # this project's config controls. GitHub's push protection correctly
@@ -62,14 +60,14 @@ _LAYER_FILES = [
 # This project's kepler configs (kepler_config_lga_preview.json, and
 # the companion akure-access-dashboard repo's kepler configs) use a
 # free CARTO Positron basemap instead of a Mapbox-hosted style, so the
-# displayed basemap itself never actually depends on this token -- but
+# displayed basemap itself never actually depends on this token, but
 # since the token is embedded regardless of style choice, it must
 # still be stripped explicitly (see _strip_mapbox_token() below) before
 # any export can safely be committed to a public repository.
 #
 # _strip_mapbox_token() removes it after export: since this project's
 # configs use a free CARTO basemap rather than a Mapbox-hosted one (see
-# above), the displayed map is unaffected -- stripping only removes an
+# above), the displayed map is unaffected, stripping only removes an
 # unused, embedded credential, not anything the basemap actually
 # depends on to render.
 _MAPBOX_TOKEN_PATTERN = re.compile(r"pk\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+")
@@ -89,7 +87,7 @@ def build_preview_map(output_dir: str, html_out: str = None, height: int = 600) 
         If provided, saves a standalone HTML file to this path
         (self-contained: data + viewer bundled in one file). Any
         Mapbox access token bundled into the export by the keplergl
-        package itself is automatically stripped before saving -- see
+        package itself is automatically stripped before saving, see
         _strip_mapbox_token() below for why this matters.
     height : int
         Map height in pixels when rendered in a notebook.

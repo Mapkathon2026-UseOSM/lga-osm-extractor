@@ -23,7 +23,7 @@ st.set_page_config(page_title="Nigerian LGA OSM Extractor", layout="wide")
 st.title("Nigerian LGA OSM Extractor")
 st.write(
     "Pick a Nigerian LGA to pull roads, buildings, waterways, land use, "
-    "health facilities, and schools directly from OpenStreetMap — no "
+    "health facilities, and schools directly from OpenStreetMap, no "
     "Overpass query syntax required."
 )
 

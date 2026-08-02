@@ -131,21 +131,20 @@ def test_export_layers_splits_mixed_geometry_types():
 def test_utm_epsg_for_longitude_known_nigerian_locations():
     """
     Verifies the UTM zone formula against known real-world reference
-    points spanning Nigeria's actual UTM zone range (31N/32N/33N) --
-    not just Ondo State, which is what the tool was originally built
+    points spanning Nigeria's actual UTM zone range (31N/32N/33N), not just Ondo State, which is what the tool was originally built
     and tested against.
     """
-    # Akure, Ondo State (Southwest Nigeria) -- the original study area,
-    # zone 31N -- must keep matching the original hardcoded default.
+    # Akure, Ondo State (Southwest Nigeria), the original study area,
+    # zone 31N, must keep matching the original hardcoded default.
     assert utm_epsg_for_longitude(5.2, 7.25) == "EPSG:32631"
 
-    # Abuja (Central Nigeria) -- zone 32N.
+    # Abuja (Central Nigeria), zone 32N.
     assert utm_epsg_for_longitude(7.5, 9.05) == "EPSG:32632"
 
-    # Maiduguri, Borno State (Northeast Nigeria) -- zone 33N.
+    # Maiduguri, Borno State (Northeast Nigeria), zone 33N.
     assert utm_epsg_for_longitude(13.15, 11.85) == "EPSG:32633"
 
-    # Lagos (Southwest Nigeria, further west than Akure) -- still zone 31N.
+    # Lagos (Southwest Nigeria, further west than Akure), still zone 31N.
     assert utm_epsg_for_longitude(3.4, 6.5) == "EPSG:32631"
 
 
@@ -162,7 +161,7 @@ def test_utm_epsg_for_longitude_zone_boundaries():
 def test_resolve_target_crs_falls_back_with_no_boundary():
     """
     Without a boundary, resolve_target_crs() must fall back to the
-    original EPSG:32631 default -- this is what keeps clean_layers()
+    original EPSG:32631 default, this is what keeps clean_layers()
     backward compatible for existing callers/tests that don't pass a
     boundary_gdf.
     """
@@ -173,7 +172,7 @@ def test_resolve_target_crs_falls_back_with_no_boundary():
 def test_resolve_target_crs_auto_selects_zone_from_boundary():
     """
     Given a real boundary polygon, resolve_target_crs() should pick the
-    UTM zone that boundary's centroid actually falls in -- not always
+    UTM zone that boundary's centroid actually falls in, not always
     EPSG:32631. This is the core behavior change this feature adds.
     """
     from shapely.geometry import box
@@ -198,7 +197,7 @@ def test_clean_layers_uses_boundary_to_select_crs():
     """
     End-to-end check that clean_layers() actually reprojects into the
     boundary-derived zone, not just the hardcoded fallback, when a
-    boundary is provided -- this is what a real extract_lga() run for
+    boundary is provided, this is what a real extract_lga() run for
     an LGA outside Ondo State now does correctly.
     """
     from shapely.geometry import box
@@ -223,7 +222,7 @@ def test_extract_layers_permissive_returns_empty_on_failure():
     """
     Default (permissive) mode: a genuine query failure (simulated here
     as an exception raised by the underlying OSM call) is caught and
-    recorded as a warning, with that layer returned empty -- so one
+    recorded as a warning, with that layer returned empty, so one
     flaky layer doesn't abort extraction of the others. This is the
     original, pre-existing behavior and must not change by default.
     """
@@ -249,7 +248,7 @@ def test_extract_layers_strict_raises_on_genuine_failure():
     """
     Strict mode: the same simulated failure above must now raise
     LayerExtractionError immediately, rather than being silently
-    swallowed into an empty GeoDataFrame -- this is the actual fix for
+    swallowed into an empty GeoDataFrame, this is the actual fix for
     the "a real failure looks identical to a genuinely empty area"
     limitation.
     """
@@ -271,7 +270,7 @@ def test_extract_layers_strict_does_not_raise_on_genuine_empty_result():
     """
     Critical distinction this feature depends on: a layer that queries
     SUCCESSFULLY but genuinely finds zero features (e.g. an LGA with no
-    OSM-tagged schools yet) must NOT raise, even in strict mode -- an
+    OSM-tagged schools yet) must NOT raise, even in strict mode, an
     empty result is valid data, not a failure. Only an actual exception
     from the underlying query should raise in strict mode.
     """
@@ -319,7 +318,7 @@ def test_resolve_boundary_accepts_plausible_akure_sized_boundary():
 def test_resolve_boundary_rejects_centroid_outside_nigeria():
     """
     A resolved boundary whose centroid falls well outside Nigeria (here,
-    near Paris) must raise -- this is the core case the geographic
+    near Paris) must raise, this is the core case the geographic
     bounding-box check exists for: a name collision or unrelated result
     silently poisoning every downstream extraction step.
     """
@@ -350,7 +349,7 @@ def test_resolve_boundary_rejects_implausibly_huge_area():
     """
     A resolved boundary roughly the size of the entire country (e.g. a
     state or the whole country was resolved instead of a single LGA)
-    must raise -- catching the opposite failure mode from the tiny-area
+    must raise, catching the opposite failure mode from the tiny-area
     check above.
     """
     path = _write_manual_boundary(box(3.0, 5.0, 14.0, 13.0))
@@ -364,7 +363,7 @@ def test_resolve_boundary_rejects_implausibly_huge_area():
 def test_validate_and_standardize_display_name_mismatch_warns_not_raises():
     """
     The display_name soft check must only ever produce a WARNING, never
-    raise -- since Nominatim's naming/abbreviation conventions vary
+    raise, since Nominatim's naming/abbreviation conventions vary
     enough that treating a mismatch as authoritative would cause false
     failures on genuinely correct boundaries. Tested directly against
     _validate_and_standardize() (rather than resolve_boundary(), since
@@ -384,7 +383,7 @@ def test_strip_mapbox_token_removes_real_token_from_export():
     """
     The installed keplergl package bundles a real Mapbox access token
     directly into its exported HTML (see visualize.py's module-level
-    comment for why) -- this caused a real GitHub push-protection
+    comment for why), this caused a real GitHub push-protection
     failure during this project's development. This test builds an
     actual preview map end-to-end and confirms the token pattern is
     genuinely absent afterward, not just theoretically stripped.
@@ -405,7 +404,7 @@ def test_strip_mapbox_token_removes_real_token_from_export():
             content = f.read()
 
         assert not _MAPBOX_TOKEN_PATTERN.search(content), (
-            "A Mapbox token pattern was still found after build_preview_map() -- "
+            "A Mapbox token pattern was still found after build_preview_map(), "
             "this would fail GitHub push protection again."
         )
         assert "</html>" in content, "Stripping the token should not corrupt the HTML file."
@@ -416,7 +415,7 @@ def test_strip_mapbox_token_removes_real_token_from_export():
 def test_strip_mapbox_token_returns_false_when_no_token_present():
     """
     _strip_mapbox_token() should report False (nothing to do) rather
-    than erroring when called on a file that has no token -- e.g. one
+    than erroring when called on a file that has no token, e.g. one
     that's already been stripped, or a future keplergl version that no
     longer bundles a default token.
     """
@@ -447,7 +446,7 @@ def test_extract_lga_end_to_end_live_osm():
         )
         assert result["boundary_source"].startswith("osm_geocode")
         assert os.path.exists(result["run_log"])
-        # Akure North is in zone 31N -- confirms auto-selection gives
+        # Akure North is in zone 31N, confirms auto-selection gives
         # the correct real-world answer, not just a synthetic one.
         assert result["target_crs"] == "EPSG:32631"
     finally:
