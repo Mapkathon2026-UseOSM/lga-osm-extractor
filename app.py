@@ -20,6 +20,27 @@ from lga_extractor import extract_lga, BoundaryResolutionError
 
 st.set_page_config(page_title="Nigerian LGA OSM Extractor", layout="wide")
 
+# Bump the base font size app-wide. Deliberately scoped to exclude h1 so the
+# title (already large/bold by default) doesn't get even bigger relative to
+# everything else.
+st.markdown(
+    """
+    <style>
+    html, body, [class*="css"] {
+        font-size: 1.15rem;
+    }
+    p, li, label, .stMarkdown, .stCaption, .stTextInput label,
+    .stSelectbox label, .stRadio label, .stCheckbox label {
+        font-size: 1.1rem !important;
+    }
+    .stButton button {
+        font-size: 1.05rem !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("Nigerian LGA OSM Extractor")
 st.write(
     "Pick a Nigerian LGA to pull roads, buildings, waterways, land use, "
@@ -58,6 +79,10 @@ if submitted:
                         st.write(f"- {w}")
 
             st.subheader("Preview map")
+            st.caption(
+                "Click any road, building, or other feature on the map to see its "
+                "OSM attributes (name, type, and other tags)."
+            )
             m = leafmap.Map()
             output_dir = result["output_dir"]
             for layer_name, paths in result["exported"].items():
@@ -65,7 +90,15 @@ if submitted:
                     continue
                 geojson_path = paths.get("geojson")
                 if geojson_path and os.path.exists(geojson_path):
-                    m.add_geojson(geojson_path, layer_name=layer_name)
+                    # info_mode="on_click" makes every layer (roads, buildings,
+                    # waterways, land use, health facilities, schools) clickable:
+                    # clicking a feature pops up its OSM attribute table instead
+                    # of just showing a static shape on the map.
+                    m.add_geojson(
+                        geojson_path,
+                        layer_name=layer_name,
+                        info_mode="on_click",
+                    )
             m.to_streamlit(height=600)
 
             st.subheader("Download results")
