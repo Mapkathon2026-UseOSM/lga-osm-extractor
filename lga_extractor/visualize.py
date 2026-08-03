@@ -64,7 +64,7 @@ _LAYER_FILES = [
 # since it still belongs to a third party.
 #
 # This project's kepler configs (kepler_config_lga_preview.json, and
-# the companion akure-access-dashboard repo's kepler configs) use a
+# the companion akure-accessibility-dashboard repo's kepler configs) use a
 # free CARTO Positron basemap instead of a Mapbox-hosted style, so the
 # displayed basemap itself never actually depends on this token, but
 # since the token is embedded regardless of style choice, it must

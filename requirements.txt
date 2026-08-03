@@ -1,7 +1,7 @@
 osmnx>=1.9
 geopandas>=0.14
 shapely>=2.0
-pyogrio>=1.6
+pyogrio>=0.7
 pandas>=2.0
 streamlit>=1.32
 leafmap>=0.31

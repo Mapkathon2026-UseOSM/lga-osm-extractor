@@ -7,7 +7,7 @@ Area (LGA), not specific to Akure. This is the "acquisition layer"
 of the two-repo project: it resolves an LGA's boundary, queries OSM
 for relevant features, cleans/standardizes them, and exports
 GeoJSON/Shapefile outputs that downstream analysis (the sibling
-`akure-access-dashboard` repo) consumes.
+`akure-accessibility-dashboard` repo) consumes.
 
 ## Architecture
 
@@ -57,7 +57,7 @@ exactly what was extracted, for reproducibility.
 
 ## Related
 
-- `../../akure-access-dashboard/`, the sibling repo that consumes
+- `../../akure-accessibility-dashboard/`, the sibling repo that consumes
   this package's output for the Akure North/South accessibility
   analysis
 - `../tests/test_cross_repo_integration.py` (in the dashboard repo), verifies this package's real output schema matches what the

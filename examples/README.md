@@ -271,7 +271,7 @@ contains extraction logic itself. See `lga_extractor/README.md` for
 the package's internal module-by-module breakdown.
 
 **Downstream:** this tool's output feeds directly into the sibling
-`akure-access-dashboard` repository's analysis pipeline, see that
+`akure-accessibility-dashboard` repository's analysis pipeline, see that
 repo's `tests/test_cross_repo_integration.py` for a test that verifies
 this compatibility directly, and `akure_access/README.md` there for
 how the two repos' data flow connects end to end.
