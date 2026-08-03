@@ -387,7 +387,18 @@ def test_strip_mapbox_token_removes_real_token_from_export():
     failure during this project's development. This test builds an
     actual preview map end-to-end and confirms the token pattern is
     genuinely absent afterward, not just theoretically stripped.
+
+    This is the only test in this file that actually exercises
+    keplergl (via build_preview_map), so it's the only one that needs
+    to skip if keplergl can't be imported, every other test in this
+    file is unrelated to keplergl entirely and should run regardless.
     """
+    pytest.importorskip(
+        "keplergl",
+        reason="keplergl not importable in this environment (commonly caused by "
+        "a missing 'setuptools'/'pkg_resources'), skipping this one keplergl-"
+        "dependent test rather than failing collection for the whole file.",
+    )
     tmp_dir = tempfile.mkdtemp()
     try:
         roads = gpd.GeoDataFrame(

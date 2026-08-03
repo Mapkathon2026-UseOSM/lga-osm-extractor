@@ -25,13 +25,19 @@ import json
 
 import geopandas as gpd
 
-try:
-    from keplergl import KeplerGl
-except ImportError as exc:
-    raise ImportError(
-        "keplergl is not installed. Run 'pip install keplergl' to use "
-        "the visualization helper."
-    ) from exc
+# keplergl is imported lazily, inside build_preview_map() below, NOT
+# here at module level. keplergl's own packaging still depends on the
+# deprecated pkg_resources API (from setuptools), which isn't
+# guaranteed to be present in every environment, notably some fresh
+# Python 3.12 virtualenvs no longer auto-install setuptools. A
+# module-level import here would mean simply importing THIS FILE (even
+# just for _strip_mapbox_token or _MAPBOX_TOKEN_PATTERN below, neither
+# of which touch keplergl at all) fails whenever keplergl's own import
+# chain is broken, taking down every caller of this module, including
+# unrelated tests, not just actual keplergl usage. Deferring the import
+# to inside build_preview_map() means this module stays importable
+# regardless, and the clear, friendly ImportError below only surfaces
+# when someone actually tries to build a preview map.
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "kepler_config_lga_preview.json")
 
@@ -98,6 +104,17 @@ def build_preview_map(output_dir: str, html_out: str = None, height: int = 600) 
         The map object. In a Jupyter notebook, display it by returning
         it as the last expression in a cell.
     """
+    try:
+        from keplergl import KeplerGl
+    except ImportError as exc:
+        raise ImportError(
+            "keplergl is not installed or could not be imported "
+            "(sometimes caused by a missing 'setuptools'/'pkg_resources' "
+            "in the current environment, try 'pip install setuptools' "
+            "alongside keplergl). Run 'pip install keplergl' to use the "
+            "visualization helper."
+        ) from exc
+
     data = {}
     for layer_name in _LAYER_FILES:
         path = os.path.join(output_dir, f"{layer_name}.geojson")
