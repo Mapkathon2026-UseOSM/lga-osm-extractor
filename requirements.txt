@@ -8,4 +8,4 @@ leafmap>=0.31
 pytest>=8.0
 
 # Optional, for the kepler.gl preview map (lga_extractor.visualize / --preview flag):
-keplergl>=0.3.2
+# keplergl>=0.3.2
