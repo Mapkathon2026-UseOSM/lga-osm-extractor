@@ -50,7 +50,7 @@ REQUEST_STAGGER_SECONDS = 3
 # connections, timeouts). A single refused connection on a shared
 # public server is often transient, a short backoff and retry succeeds
 # where an immediate second attempt would just be refused again.
-MAX_RETRIES = 3
+MAX_RETRIES = 6
 RETRY_BACKOFF_BASE_SECONDS = 5
 
 
