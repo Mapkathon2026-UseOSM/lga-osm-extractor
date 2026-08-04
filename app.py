@@ -195,16 +195,55 @@ if submitted:
             ]
             layer_items.sort(key=lambda item: 0 if item[0] == "roads" else 1)
 
-            for i, (layer_name, paths) in enumerate(layer_items):
+            # Track whether ANY layer has been zoomed to yet, rather than
+            # tying zoom_to_layer to a fixed list index. If the first
+            # layer in sorted order (roads) happens to have no file on
+            # disk (a common, valid case: an empty/skipped layer for a
+            # smaller or less-mapped LGA), indexing by position alone
+            # meant NO layer ever got zoom_to_layer=True, since the loop
+            # moved on to the next index without the map ever having
+            # zoomed to anything, this left the map at Leaflet's global
+            # default view even though other layers were still added
+            # successfully, just invisible at that zoom level. Tracking
+            # "has anything been zoomed to yet" instead guarantees
+            # whichever layer is genuinely added FIRST gets the zoom,
+            # regardless of which layers earlier in the list were empty.
+            zoomed_yet = False
+            skipped_layers = []
+            for layer_name, paths in layer_items:
                 geojson_path = paths.get("geojson")
                 if geojson_path and os.path.exists(geojson_path):
                     style = LAYER_STYLES.get(layer_name, {})
-                    m.add_geojson(
-                        geojson_path,
-                        layer_name=layer_name.replace("_", " ").title(),
-                        style=style,
-                        zoom_to_layer=(i == 0),
-                    )
+                    try:
+                        m.add_geojson(
+                            geojson_path,
+                            layer_name=layer_name.replace("_", " ").title(),
+                            style=style,
+                            zoom_to_layer=(not zoomed_yet),
+                            info_mode="on_click",
+                        )
+                        zoomed_yet = True
+                    except (IndexError, KeyError, ValueError) as exc:
+                        # export_layers() already filters out genuinely
+                        # empty layers before writing any file (they go
+                        # into exported["_skipped"] instead), so this
+                        # normally shouldn't trigger. It's here as a
+                        # backstop for a file that exists on disk but is
+                        # malformed or unexpectedly empty, e.g. a
+                        # partial/interrupted write during a long-running
+                        # extraction (a real risk here, since a single
+                        # extraction can take several minutes), rather
+                        # than one bad file crashing the whole preview
+                        # map and silently dropping every layer after it
+                        # in the loop.
+                        skipped_layers.append(layer_name)
+
+            if skipped_layers:
+                st.warning(
+                    f"Could not preview: {', '.join(skipped_layers)} (file exists but "
+                    f"couldn't be read, possibly an interrupted write). Other layers "
+                    f"and the download below are unaffected."
+                )
             m.add_layer_control()
             m.to_streamlit(height=600)
 
