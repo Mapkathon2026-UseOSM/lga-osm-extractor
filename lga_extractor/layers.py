@@ -7,10 +7,12 @@ and performs tag-based extraction of each layer within a resolved
 LGA boundary.
 """
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import geopandas as gpd
 import osmnx as ox
+import requests
 
 # Default tag-to-layer configuration.
 # Each entry maps a layer name to the OSM tag filter used with
@@ -26,20 +28,30 @@ DEFAULT_TAG_CONFIG = {
     "schools": {"amenity": "school"},
 }
 
-# Each layer is an independent Overpass API query. The public Overpass
-# endpoint is shared and queue-based, so 6 layers run one-after-another
-# means paying that queue/round-trip cost 6 times over. Running them
-# concurrently means total wall-clock time is roughly the SLOWEST single
-# layer's query time, not the sum of all 6, this is the single biggest
-# lever for reducing extraction time, since layers.py's own per-layer
-# work (the Overpass call itself) dominates total runtime far more than
-# anything in clean.py or export.py downstream.
-#
-# 6 is a safe default: it matches the number of layers exactly (no
-# layer waits for a free worker), while staying well under limits
-# that would trigger the public Overpass endpoint's own throttling of
-# a single client sending too many simultaneous requests.
-MAX_CONCURRENT_LAYER_QUERIES = 6
+# Each layer is an independent Overpass API query. Running all 6 fully
+# in parallel was tried first (max_workers=6, no stagger), and it made
+# things WORSE, not better: the public Overpass mirror actively refused
+# every single connection (Errno 111, connection refused) when 6
+# requests hit it at the exact same instant, apparently treating a
+# burst of simultaneous connections from one client as abusive traffic,
+# rather than legitimate concurrent use. So this is deliberately more
+# conservative:
+#   - only 2 requests in flight at once (not 6), and
+#   - each new request's start is staggered by REQUEST_STAGGER_SECONDS,
+#     so the server never sees more than 2 near-simultaneous connection
+#     attempts from this client, even at the very start of a run.
+# This still meaningfully beats fully sequential (queries can overlap
+# in twos rather than one at a time), without tripping the server's
+# apparent anti-burst behavior.
+MAX_CONCURRENT_LAYER_QUERIES = 2
+REQUEST_STAGGER_SECONDS = 3
+
+# Retry configuration for transient connection failures (refused
+# connections, timeouts). A single refused connection on a shared
+# public server is often transient, a short backoff and retry succeeds
+# where an immediate second attempt would just be refused again.
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE_SECONDS = 5
 
 
 class LayerExtractionError(Exception):
@@ -56,34 +68,63 @@ class LayerExtractionError(Exception):
     pass
 
 
-def _extract_single_layer(layer_name: str, tags: dict, polygon):
+def _is_transient_connection_error(exc: Exception) -> bool:
     """
-    Runs one layer's Overpass query. Returns (layer_name, gdf, warning_or_None,
-    error_or_None). Never raises, so this is safe to call from worker threads,
-    strict-mode raising is handled by the caller after all queries complete.
+    True for connection-level failures (refused connections, timeouts,
+    DNS hiccups) worth retrying, as opposed to e.g. a malformed tag
+    filter, which will just fail identically every time and shouldn't
+    burn retry attempts.
     """
-    try:
-        gdf = ox.features_from_polygon(polygon, tags)
-        if gdf is None or gdf.empty:
-            # A successful query that found nothing, valid data, not a
-            # failure. Never raises, even in strict mode.
-            warning = f"Layer '{layer_name}' returned no features within the boundary."
-            return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), warning, None
-        return layer_name, gdf, None, None
-    except Exception as exc:
-        message = f"Layer '{layer_name}' failed to extract: {exc}"
-        return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), message, exc
+    return isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
+
+
+def _extract_single_layer(layer_name: str, tags: dict, polygon, start_delay: float):
+    """
+    Runs one layer's Overpass query, after waiting `start_delay` seconds
+    (see REQUEST_STAGGER_SECONDS), retrying transient connection failures
+    up to MAX_RETRIES times with exponential backoff. Returns
+    (layer_name, gdf, warning_or_None, error_or_None). Never raises, so
+    this is safe to call from worker threads, strict-mode raising is
+    handled by the caller after all queries complete.
+    """
+    if start_delay > 0:
+        time.sleep(start_delay)
+
+    last_exc = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            gdf = ox.features_from_polygon(polygon, tags)
+            if gdf is None or gdf.empty:
+                # A successful query that found nothing, valid data, not
+                # a failure. Never raises, even in strict mode.
+                warning = f"Layer '{layer_name}' returned no features within the boundary."
+                return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), warning, None
+            return layer_name, gdf, None, None
+        except Exception as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES and _is_transient_connection_error(exc):
+                backoff = RETRY_BACKOFF_BASE_SECONDS * attempt
+                time.sleep(backoff)
+                continue
+            break
+
+    message = f"Layer '{layer_name}' failed to extract after {MAX_RETRIES} attempt(s): {last_exc}"
+    return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), message, last_exc
 
 
 def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, strict: bool = False) -> dict:
     """
     Extract OSM feature layers within a boundary polygon.
 
-    Layers are queried CONCURRENTLY (one Overpass request per layer,
-    running in parallel via a thread pool), since each layer's query is
-    independent of the others and I/O-bound (waiting on the Overpass
-    API), not CPU-bound, this is a safe and significant speedup over
-    querying layers one at a time.
+    Layers are queried with LIMITED, STAGGERED concurrency (at most
+    MAX_CONCURRENT_LAYER_QUERIES requests in flight at once, each new
+    request's start delayed by REQUEST_STAGGER_SECONDS), and transient
+    connection failures are retried with backoff. Fully unthrottled
+    concurrency (all layers at once) was tried and made things worse:
+    the public Overpass mirror refused every connection outright when
+    hit with a burst of simultaneous requests from one client. This
+    staggered, capped approach still overlaps queries (faster than
+    fully sequential), without tripping that behavior.
 
     Parameters
     ----------
@@ -97,21 +138,20 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
     strict : bool, default False
         Controls how a genuine extraction FAILURE (an Overpass error,
         timeout, network failure, or bad tag configuration, i.e. an
-        exception raised by the underlying OSM query) is handled:
+        exception raised by the underlying OSM query, that also
+        survives all retry attempts) is handled:
 
         - False (default, "permissive" mode): the failure is caught,
           recorded as a warning, and that layer is returned as an empty
           GeoDataFrame so the rest of the extraction can continue. This
           is convenient for demos and exploratory use, where a single
           flaky layer shouldn't abort the whole run.
-        - True ("strict" mode): as soon as ALL layer queries have
-          completed (queries are already in flight concurrently, so a
-          strict failure can't abort other layers mid-query the way
-          it could when queries ran sequentially), the first genuine
-          failure encountered is raised as a LayerExtractionError. This
-          is appropriate for CI/automated pipelines, where a silent
-          failure masquerading as "this area has no data" could
-          silently corrupt downstream analysis without anyone noticing.
+        - True ("strict" mode): once all layer queries have completed,
+          the first genuine failure encountered is raised as a
+          LayerExtractionError. This is appropriate for CI/automated
+          pipelines, where a silent failure masquerading as "this area
+          has no data" could silently corrupt downstream analysis
+          without anyone noticing.
 
         Either way, a layer that queries successfully but genuinely
         finds zero features is NOT treated as a failure, that's valid
@@ -123,18 +163,19 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
     dict
         Mapping of layer_name -> geopandas.GeoDataFrame (possibly
         empty if no features of that type exist within the boundary).
-        In permissive mode, layers that fail to query are also returned
-        as empty GeoDataFrames rather than raising, so that one missing
-        layer does not abort extraction of the others; in strict mode,
-        a genuine failure raises LayerExtractionError instead. Either
-        way, failures/genuine emptiness are reported via the returned
-        dict's accompanying "_warnings" list.
+        In permissive mode, layers that fail to query (even after
+        retries) are also returned as empty GeoDataFrames rather than
+        raising, so that one missing layer does not abort extraction of
+        the others; in strict mode, a genuine failure raises
+        LayerExtractionError instead. Either way, failures/genuine
+        emptiness are reported via the returned dict's accompanying
+        "_warnings" list.
 
     Raises
     ------
     LayerExtractionError
         If `strict=True` and a layer's OSM query genuinely fails (not
-        simply returns zero features).
+        simply returns zero features) after all retry attempts.
     """
     if tag_config is None:
         tag_config = DEFAULT_TAG_CONFIG
@@ -145,10 +186,15 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
     first_error = None
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_LAYER_QUERIES) as executor:
-        futures = {
-            executor.submit(_extract_single_layer, layer_name, tags, polygon): layer_name
-            for layer_name, tags in tag_config.items()
-        }
+        futures = {}
+        for i, (layer_name, tags) in enumerate(tag_config.items()):
+            # Stagger start times so no more than MAX_CONCURRENT_LAYER_QUERIES
+            # requests are ever attempted at the same instant, even though
+            # up to that many workers can be running concurrently overall.
+            start_delay = (i // MAX_CONCURRENT_LAYER_QUERIES) * REQUEST_STAGGER_SECONDS
+            future = executor.submit(_extract_single_layer, layer_name, tags, polygon, start_delay)
+            futures[future] = layer_name
+
         for future in as_completed(futures):
             layer_name, gdf, warning, error = future.result()
             layers[layer_name] = gdf
