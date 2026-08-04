@@ -7,6 +7,8 @@ and performs tag-based extraction of each layer within a resolved
 LGA boundary.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import geopandas as gpd
 import osmnx as ox
 
@@ -24,6 +26,21 @@ DEFAULT_TAG_CONFIG = {
     "schools": {"amenity": "school"},
 }
 
+# Each layer is an independent Overpass API query. The public Overpass
+# endpoint is shared and queue-based, so 6 layers run one-after-another
+# means paying that queue/round-trip cost 6 times over. Running them
+# concurrently means total wall-clock time is roughly the SLOWEST single
+# layer's query time, not the sum of all 6, this is the single biggest
+# lever for reducing extraction time, since layers.py's own per-layer
+# work (the Overpass call itself) dominates total runtime far more than
+# anything in clean.py or export.py downstream.
+#
+# 6 is a safe default: it matches the number of layers exactly (no
+# layer waits for a free worker), while staying well under limits
+# that would trigger the public Overpass endpoint's own throttling of
+# a single client sending too many simultaneous requests.
+MAX_CONCURRENT_LAYER_QUERIES = 6
+
 
 class LayerExtractionError(Exception):
     """
@@ -39,9 +56,34 @@ class LayerExtractionError(Exception):
     pass
 
 
+def _extract_single_layer(layer_name: str, tags: dict, polygon):
+    """
+    Runs one layer's Overpass query. Returns (layer_name, gdf, warning_or_None,
+    error_or_None). Never raises, so this is safe to call from worker threads,
+    strict-mode raising is handled by the caller after all queries complete.
+    """
+    try:
+        gdf = ox.features_from_polygon(polygon, tags)
+        if gdf is None or gdf.empty:
+            # A successful query that found nothing, valid data, not a
+            # failure. Never raises, even in strict mode.
+            warning = f"Layer '{layer_name}' returned no features within the boundary."
+            return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), warning, None
+        return layer_name, gdf, None, None
+    except Exception as exc:
+        message = f"Layer '{layer_name}' failed to extract: {exc}"
+        return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), message, exc
+
+
 def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, strict: bool = False) -> dict:
     """
     Extract OSM feature layers within a boundary polygon.
+
+    Layers are queried CONCURRENTLY (one Overpass request per layer,
+    running in parallel via a thread pool), since each layer's query is
+    independent of the others and I/O-bound (waiting on the Overpass
+    API), not CPU-bound, this is a safe and significant speedup over
+    querying layers one at a time.
 
     Parameters
     ----------
@@ -62,9 +104,12 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
           GeoDataFrame so the rest of the extraction can continue. This
           is convenient for demos and exploratory use, where a single
           flaky layer shouldn't abort the whole run.
-        - True ("strict" mode): the failure is raised immediately as a
-          LayerExtractionError, aborting extraction. This is
-          appropriate for CI/automated pipelines, where a silent
+        - True ("strict" mode): as soon as ALL layer queries have
+          completed (queries are already in flight concurrently, so a
+          strict failure can't abort other layers mid-query the way
+          it could when queries ran sequentially), the first genuine
+          failure encountered is raised as a LayerExtractionError. This
+          is appropriate for CI/automated pipelines, where a silent
           failure masquerading as "this area has no data" could
           silently corrupt downstream analysis without anyone noticing.
 
@@ -97,23 +142,24 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
     polygon = boundary_gdf.geometry.iloc[0]
     layers = {}
     warnings = []
+    first_error = None
 
-    for layer_name, tags in tag_config.items():
-        try:
-            gdf = ox.features_from_polygon(polygon, tags)
-            if gdf is None or gdf.empty:
-                # A successful query that found nothing, valid data,
-                # not a failure. Never raises, even in strict mode.
-                warnings.append(f"Layer '{layer_name}' returned no features within the boundary.")
-                gdf = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
-        except Exception as exc:
-            message = f"Layer '{layer_name}' failed to extract: {exc}"
-            if strict:
-                raise LayerExtractionError(message) from exc
-            warnings.append(message)
-            gdf = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_LAYER_QUERIES) as executor:
+        futures = {
+            executor.submit(_extract_single_layer, layer_name, tags, polygon): layer_name
+            for layer_name, tags in tag_config.items()
+        }
+        for future in as_completed(futures):
+            layer_name, gdf, warning, error = future.result()
+            layers[layer_name] = gdf
+            if warning:
+                warnings.append(warning)
+            if error is not None and first_error is None:
+                first_error = (layer_name, warning, error)
 
-        layers[layer_name] = gdf
+    if strict and first_error is not None:
+        _, message, error = first_error
+        raise LayerExtractionError(message) from error
 
     layers["_warnings"] = warnings
     return layers
