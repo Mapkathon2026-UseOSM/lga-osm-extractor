@@ -152,7 +152,6 @@ LAYER_STYLES = {
 if submitted:
     if not lga_name.strip():
         st.error("Please enter an LGA name.")
-        st.session_state.pop("extraction_result", None)
     else:
         with st.spinner(
             f"Resolving boundary and extracting OSM layers for {lga_name} "
@@ -169,123 +168,103 @@ if submitted:
                 st.error(f"Extraction failed: {exc}")
                 result = None
 
-        # Store the result (plus which LGA it belongs to) in session_state
-        # instead of only holding it in a local variable. Streamlit reruns
-        # the ENTIRE script top-to-bottom on any widget interaction,
-        # including clicking st.download_button below, that's simply how
-        # Streamlit implements downloads. Without session_state, this whole
-        # block (map included) was gated behind `if submitted:`, which is
-        # only True on the exact run where the form was just submitted, so
-        # the very next rerun (triggered by clicking download) had
-        # submitted=False again and the entire preview/download section,
-        # map included, disappeared. Storing the result here means it
-        # survives that rerun; it's only ever replaced when a NEW
-        # extraction actually succeeds (or cleared above if the LGA name
-        # was blank), not simply whenever the script happens to rerun.
         if result:
-            st.session_state["extraction_result"] = result
-            st.session_state["extraction_lga_name"] = lga_name
+            st.success(f"Extraction complete for {lga_name}.")
 
-if "extraction_result" in st.session_state:
-    result = st.session_state["extraction_result"]
-    lga_name = st.session_state["extraction_lga_name"]
+            if result["warnings"]:
+                with st.expander("Warnings"):
+                    for w in result["warnings"]:
+                        st.write(f"- {w}")
 
-    st.success(f"Extraction complete for {lga_name}.")
+            st.subheader("Preview map")
+            st.caption(
+                "Every extracted layer is shown together below. Click any feature to see "
+                "its OSM attributes, and use the layer control (top-right of the map) to "
+                "toggle individual layers on or off, useful since dense layers like "
+                "buildings can visually overwhelm the map when everything is shown at once."
+            )
+            m = leafmap.Map()
+            output_dir = result["output_dir"]
 
-    if result["warnings"]:
-        with st.expander("Warnings"):
-            for w in result["warnings"]:
-                st.write(f"- {w}")
+            layer_items = [
+                (name, paths) for name, paths in result["exported"].items()
+                if not name.startswith("_")
+            ]
+            layer_items.sort(key=lambda item: 0 if item[0] == "roads" else 1)
 
-    st.subheader("Preview map")
-    st.caption(
-        "Every extracted layer is shown together below. Click any feature to see "
-        "its OSM attributes, and use the layer control (top-right of the map) to "
-        "toggle individual layers on or off, useful since dense layers like "
-        "buildings can visually overwhelm the map when everything is shown at once."
-    )
-    m = leafmap.Map()
-    output_dir = result["output_dir"]
+            # Collect bounds from every non-empty layer so the map frames ALL
+            # extracted data, not just whichever layer happens to be added
+            # first. Relying on add_geojson's own zoom_to_layer for only one
+            # layer is fragile: if that particular layer is empty, small, or
+            # has odd geometry, every other (non-empty) layer ends up added
+            # to the map but outside the visible viewport, which looks
+            # exactly like "the map loaded but nothing is on it".
+            combined_bounds = None
+            added_any_layer = False
 
-    layer_items = [
-        (name, paths) for name, paths in result["exported"].items()
-        if not name.startswith("_")
-    ]
-    layer_items.sort(key=lambda item: 0 if item[0] == "roads" else 1)
+            for layer_name, paths in layer_items:
+                geojson_path = paths.get("geojson")
+                if not geojson_path or not os.path.exists(geojson_path):
+                    continue
 
-    # Collect bounds from every non-empty layer so the map frames ALL
-    # extracted data, not just whichever layer happens to be added
-    # first. Relying on add_geojson's own zoom_to_layer for only one
-    # layer is fragile: if that particular layer is empty, small, or
-    # has odd geometry, every other (non-empty) layer ends up added
-    # to the map but outside the visible viewport, which looks
-    # exactly like "the map loaded but nothing is on it".
-    combined_bounds = None
-    added_any_layer = False
+                # Guard against genuinely empty layers (0 features is valid
+                # and expected per the "About this tool" note above, e.g. no
+                # mapped waterways in a given LGA). Without this check,
+                # leafmap's add_geojson() tries to read
+                # data["features"][0]["properties"] to build tooltip/popup
+                # fields and raises IndexError on an empty FeatureCollection,
+                # which breaks the rest of this loop.
+                gdf = gpd.read_file(geojson_path)
+                if gdf.empty:
+                    continue
 
-    for layer_name, paths in layer_items:
-        geojson_path = paths.get("geojson")
-        if not geojson_path or not os.path.exists(geojson_path):
-            continue
+                style = LAYER_STYLES.get(layer_name, {})
+                m.add_geojson(
+                    geojson_path,
+                    layer_name=layer_name.replace("_", " ").title(),
+                    style=style,
+                    info_mode="on_click",
+                    zoom_to_layer=False,  # we zoom once, explicitly, below instead
+                )
+                added_any_layer = True
 
-        # Guard against genuinely empty layers (0 features is valid
-        # and expected per the "About this tool" note above, e.g. no
-        # mapped waterways in a given LGA). Without this check,
-        # leafmap's add_geojson() tries to read
-        # data["features"][0]["properties"] to build tooltip/popup
-        # fields and raises IndexError on an empty FeatureCollection,
-        # which breaks the rest of this loop.
-        gdf = gpd.read_file(geojson_path)
-        if gdf.empty:
-            continue
+                bounds = gdf.total_bounds  # [minx, miny, maxx, maxy]
+                if combined_bounds is None:
+                    combined_bounds = list(bounds)
+                else:
+                    combined_bounds[0] = min(combined_bounds[0], bounds[0])
+                    combined_bounds[1] = min(combined_bounds[1], bounds[1])
+                    combined_bounds[2] = max(combined_bounds[2], bounds[2])
+                    combined_bounds[3] = max(combined_bounds[3], bounds[3])
 
-        style = LAYER_STYLES.get(layer_name, {})
-        m.add_geojson(
-            geojson_path,
-            layer_name=layer_name.replace("_", " ").title(),
-            style=style,
-            info_mode="on_click",
-            zoom_to_layer=False,  # we zoom once, explicitly, below instead
-        )
-        added_any_layer = True
+            if added_any_layer and combined_bounds is not None:
+                m.zoom_to_bounds(combined_bounds)
+            else:
+                st.info(
+                    "No features were found in any layer for this LGA, there is "
+                    "nothing to preview on the map for this extraction."
+                )
 
-        bounds = gdf.total_bounds  # [minx, miny, maxx, maxy]
-        if combined_bounds is None:
-            combined_bounds = list(bounds)
-        else:
-            combined_bounds[0] = min(combined_bounds[0], bounds[0])
-            combined_bounds[1] = min(combined_bounds[1], bounds[1])
-            combined_bounds[2] = max(combined_bounds[2], bounds[2])
-            combined_bounds[3] = max(combined_bounds[3], bounds[3])
+            m.add_layer_control()
+            m.to_streamlit(height=600)
 
-    if added_any_layer and combined_bounds is not None:
-        m.zoom_to_bounds(combined_bounds)
-    else:
-        st.info(
-            "No features were found in any layer for this LGA, there is "
-            "nothing to preview on the map for this extraction."
-        )
+            st.subheader("Download results")
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w") as zf:
+                for root, _, files in os.walk(output_dir):
+                    for file in files:
+                        filepath = os.path.join(root, file)
+                        arcname = os.path.relpath(filepath, output_dir)
+                        zf.write(filepath, arcname)
+            zip_buffer.seek(0)
 
-    m.add_layer_control()
-    m.to_streamlit(height=600)
-
-    st.subheader("Download results")
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w") as zf:
-        for root, _, files in os.walk(output_dir):
-            for file in files:
-                filepath = os.path.join(root, file)
-                arcname = os.path.relpath(filepath, output_dir)
-                zf.write(filepath, arcname)
-    zip_buffer.seek(0)
-
-    st.download_button(
-        label=f"Download {lga_name} OSM data (.zip)",
-        data=zip_buffer,
-        file_name=f"{lga_name.replace(' ', '_').lower()}_osm_data.zip",
-        mime="application/zip",
-        type="primary",
-    )
+            st.download_button(
+                label=f"Download {lga_name} OSM data (.zip)",
+                data=zip_buffer,
+                file_name=f"{lga_name.replace(' ', '_').lower()}_osm_data.zip",
+                mime="application/zip",
+                type="primary",
+            )
 
 st.markdown(
     """
