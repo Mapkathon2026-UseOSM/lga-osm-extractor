@@ -70,9 +70,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("About this tool and how to use it", expanded=False):
-    st.markdown(
-        """
+st.markdown("#### About this tool and how to use it")
+st.markdown(
+    """
 This tool turns a plain LGA name into a clean, ready-to-use OSM dataset in three steps:
 
 1. **Type an LGA name** (and ideally its state, to disambiguate LGAs that share a name
@@ -83,7 +83,7 @@ This tool turns a plain LGA name into a clean, ready-to-use OSM dataset in three
    and **schools**.
 3. **Preview every layer on the interactive map below**, toggle individual layers on or
    off using the layer control (top-right of the map), and **download everything as a
-   zip** of clean, standardized GeoJSON files, one per layer, ready to open in QGIS,
+   zip** of clean, standardized GeoJSON files and shapefiles, one per layer, ready to open in QGIS,
    load into a notebook, or feed into further analysis.
 
 **Why extraction can take a few minutes.** Every run queries OpenStreetMap's live,
@@ -106,8 +106,8 @@ be instant, since results are cached.
 Any layer that genuinely has zero matching features in OpenStreetMap for a given LGA
 (common for smaller or less-mapped areas) is simply empty, not a failure, this reflects
 real current OSM coverage for that area, which is itself useful information.
-        """
-    )
+    """
+)
 
 with st.form("extract_form"):
     col1, col2 = st.columns(2)
