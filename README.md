@@ -2,122 +2,79 @@
 
 [![Tests](https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml/badge.svg)](https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml)
 
-A reusable Python tool for extracting OpenStreetMap (OSM) data, roads,
-buildings, waterways, land use, health facilities, and schools, for any
-Nigerian Local Government Area (LGA), and exporting clean GeoJSON and
-Shapefile outputs.
+**Live demo:** https://lga-extractor.streamlit.app/ · **GitHub:** https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor
 
-Built for **Map<>kathon 2026** (OSM Dashboard or Analysis track), as the
-data-extraction engine behind *"Mapping the Gap: Health and Education
-Accessibility in Akure North and Akure South."* The tool itself is
-generalized to work for **any** Nigerian LGA, solving a recurring pain
-point: constructing correct Overpass queries and administrative boundary
-lookups for Nigerian LGAs is non-trivial for many students and researchers.
+Turn a plain Nigerian LGA name into a clean, ready-to-use OSM dataset,
+roads, buildings, waterways, land use, health facilities, and schools,
+with no Overpass query syntax, GIS software, or manual data wrangling
+required.
+
+Built for **Map<>kathon 2026** (Lightweight Tool / Demo track), as the
+data-extraction engine behind the sibling submission
+**[akure-accessibility-dashboard](https://github.com/Mapkathon2026-UseOSM/akure-accessibility-dashboard)**,
+*"Mapping the Gap: Health and Education Accessibility in Akure North
+and Akure South."* The tool itself is generalized to work for **any**
+Nigerian LGA, not just those two: constructing correct Overpass
+queries and resolving inconsistent administrative boundaries is a
+real, recurring friction point for Nigerian GIS students and
+researchers, and this tool removes it entirely.
 
 > **How this serves the public good:** every Nigerian GIS student or
 > researcher who has tried to pull OSM data for their own state or LGA
 > knows the friction of hand-writing Overpass queries and resolving
 > inconsistent administrative boundaries. This tool removes that
-> friction entirely, turning a task that used to require OSM expertise
-> into a single function call, so more people can go from "I have an
-> idea" to "I have the data" and actually build something useful with
-> OpenStreetMap.
+> friction entirely, so more people can go from "I have an idea" to
+> "I have the data" and actually build something with OpenStreetMap.
 
-<!--
-Preview screenshot / GIF placeholder.
-Generate this after running the tool once, e.g.:
-    python cli.py --lga "Akure North" --state "Ondo" --preview
-This creates visuals/akure_north_preview.html, open it in a browser,
-take a screenshot (or screen-record a quick pan/zoom for a GIF), save it
-as docs/preview.png (or .gif) in this repo, then uncomment the line below.
--->
-<!-- ![Preview of extracted Akure North layers in kepler.gl](docs/preview.png) -->
+## Try it
 
-*(Preview screenshot to be added here once generated, see comment in
-source for the one-line command that produces it.)*
+The live demo requires no setup: https://lga-extractor.streamlit.app/
+
+Or run it locally:
+
+```bash
+pip install -e ".[app]"
+streamlit run app.py
+```
+
+Type in an LGA name, watch it extract live from OSM, preview every
+layer on an interactive map, and download everything as a zip.
+
+The live demo is deployed on Streamlit Community Cloud with an exact
+pinned dependency set (`requirements.txt`) and a pinned Python version
+(`runtime.txt`, `python-3.11`), deliberately, an earlier deploy broke
+when Streamlit Cloud resolved a newer, untested Python/package
+combination on its own; see the sibling
+`akure-accessibility-dashboard` repo's `AI_DISCLOSURE.md` for the full
+story of that failure mode, since it happened there first and both
+repos now pin the same way to avoid repeating it.
 
 ## What it does
 
-Given an LGA name (e.g. `"Akure North"`, state `"Ondo"`), the tool:
+Given an LGA name (e.g. `"Akure North"`, state `"Ondo"`):
 
-1. Resolves the LGA's administrative boundary from OSM (with a manual
-   boundary fallback if OSM's boundary data is missing or mistagged),
-   and validates it against a geographic bounding box and plausible
-   area range before proceeding, see "Known limitations" below for
-   what this does and doesn't catch.
-2. Extracts roads, buildings, waterways, land use, health facilities, and
-   schools within that boundary.
-3. Cleans and standardizes the data (reprojects to the correct UTM zone
-   for that LGA's location, auto-selected from the boundary's
-   centroid, e.g. `EPSG:32631` for Southwest Nigeria, repairs
-   invalid geometries, removes duplicates, standardizes the attribute
-   schema).
-4. Exports each layer as GeoJSON and Shapefile.
-5. Writes a run log recording exactly what was queried, so extractions
-   are traceable and reproducible.
+1. **Resolves the boundary** from OSM, with a manual-boundary fallback
+   and a two-tier sanity check (see `lga_extractor/README.md`) that
+   catches "resolved the wrong place entirely," not just unusual-but-
+   valid LGA shapes.
+2. **Extracts** roads, buildings, waterways, land use, health
+   facilities, and schools within that boundary, from OSM's live
+   Overpass API.
+3. **Cleans and standardizes**: reprojects to the correct UTM zone for
+   that LGA's actual location (auto-selected, not hardcoded, since
+   Nigeria spans three UTM zones), repairs invalid geometries, removes
+   duplicates, standardizes the attribute schema.
+4. **Exports** each layer as GeoJSON and Shapefile.
+5. **Writes a run log** recording exactly what was queried, so every
+   extraction is traceable and reproducible.
 
-## Installation
+## Quickstart
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor.git
 cd lga-osm-extractor
 pip install -e .
 ```
-
-This installs the `lga_extractor` package in editable mode, so `import
-lga_extractor` works from anywhere on your system, not just from inside
-this directory, and any edits to the source take effect immediately
-without reinstalling.
-
-Optional extras:
-
-```bash
-pip install -e ".[viz]"   # adds keplergl (for the preview map / --preview)
-pip install -e ".[app]"   # adds streamlit + leafmap (for the demo form)
-pip install -e ".[dev]"   # adds pytest (for running the test suite)
-pip install -e ".[all]"   # everything above
-```
-
-Or with conda:
-
-```bash
-conda env create -f conda-environment.yml
-conda activate lga_extractor_env
-pip install -e .
-```
-
-> Note: this file is deliberately named `conda-environment.yml`, not the
-> conventional `environment.yml`. Streamlit Community Cloud auto-detects
-> a root-level `environment.yml` and uses conda to build the deployed
-> app's environment instead of pip + `requirements.txt` -- conda's
-> dependency solver can take a very long time (or effectively hang) on
-> a graph this size with open-ended version constraints, which is what
-> caused this app's deployment to spin indefinitely at "Solving
-> environment" before this rename. Renaming it keeps conda available
-> for local development while ensuring Streamlit Cloud uses the
-> faster, already-verified pip path.
-
-Or, without installing at all, just add the repo to your path:
-
-```bash
-pip install -r requirements.txt
-# then in Python: sys.path.append("path/to/lga-osm-extractor")
-```
-
-## Verifying the install
-
-```bash
-pytest -m "not integration" -v
-```
-
-This runs the offline unit test suite (cleaning, export, and the
-mixed-geometry Shapefile-splitting logic) without requiring network
-access. The same command runs automatically on every push via GitHub
-Actions, see the badge at the top of this README.
-
-## Usage
-
-### As a Python module
 
 ```python
 from lga_extractor import extract_lga
@@ -126,58 +83,18 @@ result = extract_lga(lga_name="Akure North", state_name="Ondo")
 print(result)
 ```
 
-### From the command line
+Or from the command line:
 
 ```bash
 python cli.py --lga "Akure North" --state "Ondo"
-python cli.py --lga "Akure South" --state "Ondo" --output-dir data/processed/akure_south
+python cli.py --lga "Akure North" --state "Ondo" --preview  # + kepler.gl HTML map
 ```
 
-If OSM boundary resolution fails for a given LGA:
+Optional installs: `pip install -e ".[viz]"` (kepler.gl preview maps),
+`".[app]"` (Streamlit demo), `".[dev]"` (tests), `".[all]"` (everything).
 
-```bash
-python cli.py --lga "Some LGA" --manual-boundary path/to/boundary.geojson
-```
-
-Add `--preview` to also generate a standalone kepler.gl HTML preview map:
-
-```bash
-python cli.py --lga "Akure North" --state "Ondo" --preview
-```
-
-### Polished preview map (kepler.gl)
-
-For a quick, all-layers-at-once visual of an extraction, useful for
-sanity-checking results or sharing a nice-looking preview without GIS
-software, use the `visualize` helper directly:
-
-```python
-from lga_extractor import build_preview_map
-
-build_preview_map(
-    output_dir="output/akure_north",
-    html_out="visuals/akure_north_preview.html",
-)
-```
-
-This is purely a visual convenience layer (not an analysis tool): it
-loads whichever layers exist for the LGA, applies a default style
-(`kepler_config_lga_preview.json`), and saves a standalone HTML file
-(data + viewer bundled) that opens in any browser. Requires
-`pip install keplergl`, kept optional since the core extractor works
-without it.
-
-See `docs/README.md` for how to turn a generated preview into the
-screenshot shown at the top of this README.
-
-### As a Streamlit demo
-
-```bash
-streamlit run app.py
-```
-
-Type in an LGA name, preview the extracted layers on a map, and download
-the results as a zip file.
+Verify the install: `pytest -m "not integration" -v` (fast, offline,
+same command CI runs on every push).
 
 ## Default OSM tags used
 
@@ -190,70 +107,44 @@ the results as a zip file.
 | Health facilities | `amenity=hospital/clinic/pharmacy` |
 | Schools | `amenity=school` |
 
-This mapping is configurable, see `lga_extractor/layers.py`,
-`DEFAULT_TAG_CONFIG`. Pass a custom `tag_config` dict into `extract_lga()`
-to add or remove layers (e.g. markets, places of worship) without
-touching the extraction logic.
+Configurable, see `lga_extractor/layers.py`, `DEFAULT_TAG_CONFIG`. Pass
+a custom `tag_config` dict into `extract_lga()` to add or remove
+layers (e.g. markets, places of worship) without touching extraction
+logic.
 
 ## Repository structure
 
 ```
 lga-osm-extractor/
-├── README.md
+├── README.md                  # this file
 ├── LICENSE
 ├── pyproject.toml             # packaging config, enables `pip install -e .`
-├── requirements.txt
-├── requirements-lock.txt      # exact pip-resolved versions, see "Reproducible installs" below
-├── conda-environment.yml
+├── requirements.txt / requirements-lock.txt / conda-environment.yml
+├── runtime.txt                 # pins Python 3.11 for Streamlit Cloud (see "Try it")
 ├── pytest.ini
+├── .github/workflows/test.yml # CI: offline tests on every push/PR
 │
-├── .github/
-│   └── workflows/
-│       └── test.yml           # CI: runs offline tests on every push/PR
-│
-├── lga_extractor/
-│   ├── __init__.py
+├── lga_extractor/             # the package, see lga_extractor/README.md
 │   ├── boundary.py            # LGA name -> boundary polygon resolution
-│   ├── layers.py              # tag-to-layer config and extraction functions
-│   ├── clean.py               # geometry cleaning and schema standardization
-│   ├── export.py              # GeoJSON / Shapefile export
-│   ├── logging_utils.py       # run-log generation
-│   ├── pipeline.py            # extract_lga() end-to-end wrapper
-│   └── visualize.py           # kepler.gl preview map helper (optional)
+│   ├── layers.py              # tag-to-layer config + extraction
+│   ├── clean.py                # geometry cleaning, CRS, schema standardization
+│   ├── export.py                # GeoJSON / Shapefile export
+│   ├── logging_utils.py          # run-log generation
+│   ├── pipeline.py                # extract_lga() end-to-end wrapper
+│   └── visualize.py               # kepler.gl preview map helper (optional)
 │
-├── kepler_config_lga_preview.json   # default styling for preview maps
+├── cli.py                     # command-line entry point
+├── app.py                     # Streamlit demo
+├── kepler_config_lga_preview.json
 │
-├── cli.py                     # command-line entry point (supports --preview)
-├── app.py                     # Streamlit demo form
-│
-├── examples/
-│   └── extract_akure_lgas.ipynb
-│
-├── visuals/
-│   └── {lga_name}_preview.html   # kepler.gl standalone exports
-│
-├── docs/
-│   ├── README.md                 # how to generate the preview screenshot/GIF
-│   └── preview.png                (add after generating; referenced by main README)
-│
-├── output/
-│   └── {lga_name}/
-│       ├── roads.geojson
-│       ├── buildings.geojson
-│       ├── waterways.geojson
-│       ├── landuse.geojson
-│       ├── health_facilities.geojson
-│       ├── schools.geojson
-│       ├── shapefiles/
-│       └── run_log.json
-│
-└── tests/
-    └── test_extraction.py
+├── examples/                  # worked tutorial notebook, see examples/README.md
+├── docs/                      # how to regenerate the preview screenshot
+├── tests/                     # see tests/README.md
+├── visuals/                   # kepler.gl standalone HTML exports
+└── output/{lga_name}/         # extraction output (GeoJSON, Shapefile, run_log.json)
 ```
 
-## Architecture overview
-
-**Pipeline, in order:**
+## Architecture
 
 ```
 extract_lga(lga_name, state_name)
@@ -265,101 +156,17 @@ extract_lga(lga_name, state_name)
     └─► logging_utils.log_run()       → run_log.json (query config, package versions, warnings)
 ```
 
-`cli.py` and `app.py` are two interfaces onto this same pipeline (a
-command-line tool and a Streamlit demo, respectively); neither
-contains extraction logic itself. See `lga_extractor/README.md` for
-the package's internal module-by-module breakdown.
+`cli.py` and `app.py` are two interfaces onto this same pipeline;
+neither contains extraction logic itself. Full module-by-module
+breakdown, design decisions, and known limitations:
+**[`lga_extractor/README.md`](lga_extractor/README.md)**.
 
 **Downstream:** this tool's output feeds directly into the sibling
-`akure-accessibility-dashboard` repository's analysis pipeline, see that
-repo's `tests/test_cross_repo_integration.py` for a test that verifies
-this compatibility directly, and `akure_access/README.md` there for
-how the two repos' data flow connects end to end.
-
-## Known limitations
-
-- Boundary resolution quality depends on how well an LGA is tagged in
-  OSM; some Nigerian LGAs may need a manual boundary supplied.
-- Every resolved boundary is validated before extraction proceeds, via
-  `boundary._validate_and_standardize()`, in two tiers:
-  - **Hard checks (raise `BoundaryResolutionError`, aborting
-    extraction):** the boundary's centroid must fall within Nigeria's
-    approximate bounding box, and its area (measured in the
-    auto-selected UTM zone, see below) must fall within a generously
-    wide plausible range for a single LGA (2 km² to 10,000 km²). These
-    catch the specific failure modes of "a name collision resolved to
-    an unrelated place," "a single point/building was resolved instead
-    of the LGA boundary," and "a whole state or the entire country was
-    resolved instead of one LGA."
-  - **Soft check (recorded as a warning, does not raise):** if OSM
-    provided a `display_name` field, it's checked for an obvious
-    mention of the requested LGA/state name. A mismatch here is often
-    just Nominatim's naming conventions, not necessarily a wrong
-    result, so it's surfaced as a warning (in
-    `result["warnings"]` and the run log), not treated as a failure.
-
-  This is not a full `admin_level`/relation-type verification against
-  an authoritative Nigerian administrative boundary dataset, that
-  would be the most rigorous version of this check, but requires a
-  reference dataset this tool doesn't currently depend on. What's
-  implemented catches the failure modes most likely to actually occur
-  (wrong place entirely, wrong scale entirely) without adding that
-  dependency. If a resolved boundary passes these checks but still
-  looks wrong on inspection, supply a manual boundary instead.
-- The correct UTM zone is auto-selected per LGA.
-  `clean.resolve_target_crs()` takes the resolved boundary's centroid
-  longitude and picks the correct UTM zone from it (31N/32N/33N,
-  covering all of Nigeria), falling back to EPSG:32631 only if no
-  boundary is available at all. The resolved CRS for any given run is
-  recorded in that run's `run_log.json` under `target_crs`, so it's
-  traceable rather than assumed. See `clean.utm_epsg_for_longitude()`
-  and its tests (`test_utm_epsg_for_longitude_known_nigerian_locations`,
-  `test_resolve_target_crs_auto_selects_zone_from_boundary`) for the
-  exact logic and verification against known Nigerian reference points.
-- Feature completeness depends entirely on existing OSM contributor
-  coverage, the tool extracts what exists in OSM, it does not verify
-  ground truth.
-- Strict vs. permissive extraction mode is configurable.
-  `extract_lga(..., strict=True)` raises a `LayerExtractionError`
-  immediately if a layer's OSM query genuinely fails (an Overpass
-  timeout, network error, or bad tag configuration), while a layer
-  that queries successfully but simply finds zero features (a valid
-  result, not a failure) still never raises, even in strict mode. The
-  default is permissive (`strict=False`: failures are caught, logged as
-  warnings, and that layer is returned empty so the rest of the
-  extraction can continue), which stays appropriate for demos and
-  exploratory use. Use `strict=True` for automated/CI pipelines, where
-  a silent failure could otherwise corrupt downstream analysis without
-  anyone noticing. See `layers.extract_layers()`'s docstring and
-  `test_extract_layers_strict_raises_on_genuine_failure` /
-  `test_extract_layers_strict_does_not_raise_on_genuine_empty_result`
-  for the exact behavior and its test coverage.
-- Default tags cover the most common cases; extend `DEFAULT_TAG_CONFIG`
-  for additional feature types.
-- Some tag filters (notably `highway=*` for roads) match both line
-  geometries and point nodes in OSM (e.g. traffic signals, crossings).
-  Since Shapefile requires a single geometry type per file, such layers
-  are automatically split into per-type Shapefiles on export (e.g.
-  `roads_line.shp` and `roads_point.shp`), GeoJSON export is unaffected
-  and always contains the full mixed-type layer in one file. See
-  `exported[layer]["_split_layers"]` in the run log for which layers
-  were split on a given run.
-
-## Documentation overhaul (Phase 1)
-
-As part of a repository-wide readability/maintainability pass:
-- New folder-level README: `lga_extractor/README.md` (package
-  architecture, module-by-module breakdown)
-- The "Architecture overview" section above, showing the extraction
-  pipeline end to end and how it connects to the sibling dashboard repo
-- Existing module/function docstrings were audited; all package files
-  already carry complete module-level docstrings (added/refined across
-  earlier sessions covering the run-log environment capture, mixed-
-  geometry Shapefile export handling, and dependency lockfile work)
-
-A full tutorial-style rebuild of `examples/extract_akure_lgas.ipynb`
-is a larger undertaking, tracked separately given proximity to the
-Aug 7 submission deadline.
+**[akure-accessibility-dashboard](https://github.com/Mapkathon2026-UseOSM/akure-accessibility-dashboard)**
+repository's analysis pipeline. `tests/test_cross_repo_integration.py`
+(in that repo) verifies this compatibility directly on every push via
+a dedicated cross-repo CI workflow, this isn't just an assumed
+contract between the two repos, it's tested.
 
 ## License
 
@@ -370,4 +177,106 @@ under the [Open Database License (ODbL)](https://www.openstreetmap.org/copyright
 ## Part of
 
 **Map<>kathon 2026**, in partnership with Unpatterned and the
-OpenStreetMap Engineering Working Group. https://www.useosm.org/
+OpenStreetMap Engineering Working Group.
+
+- UseOSM: https://www.useosm.org/en/
+- Map<>kathon 2026 event page: https://www.useosm.org/en/community-events/mapkaton-2026
+- Sibling submission: [akure-accessibility-dashboard](https://github.com/Mapkathon2026-UseOSM/akure-accessibility-dashboard) — https://akure-accessibility-dashboard-analysis.streamlit.app/
+
+## AI Disclosure
+
+Following Map<>kathon 2026's Responsible AI principles: state what tool
+was used, explain its role, confirm outputs were reviewed, confirm no
+blind write-back to OSM, confirm local knowledge/community guidelines
+were respected, and acknowledge limitations/risks/uncertainty.
+
+### Tool used
+
+**Claude (Anthropic)** was used as a coding assistant throughout the
+development of `lga-osm-extractor`, across multiple sessions.
+
+### Role AI played
+
+Claude assisted with the following, mapped to the actual modules in
+this repository:
+
+- **Pipeline structure and orchestration** — `lga_extractor/pipeline.py`'s
+  `extract_lga()`, the single function that wires
+  `boundary.resolve_boundary()` → `layers.extract_layers()` →
+  `clean.clean_layers()` → `export.export_layers()` →
+  `logging_utils.log_run()` into one call, plus the module layout
+  itself (`boundary.py` / `layers.py` / `clean.py` / `export.py` /
+  `visualize.py` / `logging_utils.py` as separate, single-purpose
+  files) and the CLI/config design (`cli.py`'s argparse interface,
+  `app.py`'s Streamlit form).
+
+- **Boundary resolution and validation** — `boundary.py`'s
+  `resolve_boundary()` and `_validate_and_standardize()`: the two-tier
+  hard/soft validation scheme (hard checks that raise
+  `BoundaryResolutionError` when a centroid falls outside
+  `NIGERIA_BBOX` or an area falls outside `MIN_PLAUSIBLE_LGA_AREA_KM2`/
+  `MAX_PLAUSIBLE_LGA_AREA_KM2`; a soft `display_name` check that only
+  warns), and debugging the specific edge cases that shaped those
+  thresholds (a single resolved point/building vs. an entire
+  state/country being returned by Nominatim).
+
+- **Auto-CRS selection logic** — `clean.py`'s
+  `utm_epsg_for_longitude()` and `resolve_target_crs()`: implementing
+  and debugging the logic that auto-selects the correct UTM zone
+  (31N/32N/33N, covering all of Nigeria) from a resolved boundary's
+  centroid longitude, rather than a single hardcoded zone, verified
+  against known reference points (Akure/Ondo, Abuja, Maiduguri) in
+  `tests/test_extraction.py`.
+
+- **Strict vs. permissive extraction modes** — `layers.py`'s
+  `extract_layers()` and `_extract_single_layer()`: designing the
+  distinction between a genuine query failure (`LayerExtractionError`
+  in strict mode) and a query that succeeds but legitimately finds
+  zero features (never an error, either mode), plus the retry/backoff
+  logic (`MAX_RETRIES`, `RETRY_BACKOFF_BASE_SECONDS`) and the
+  staggered, capped-concurrency querying (`MAX_CONCURRENT_LAYER_QUERIES = 2`,
+  `REQUEST_STAGGER_SECONDS = 3`) arrived at after fully unthrottled
+  concurrency caused OSM's public Overpass mirror to refuse every
+  connection outright.
+
+- **kepler.gl preview map helper and credential hygiene** —
+  `visualize.py`'s `build_preview_map()` and `_strip_mapbox_token()`:
+  the lazy `keplergl` import (so the rest of the package stays
+  importable even if `keplergl`'s own `pkg_resources`/`setuptools`
+  dependency chain is broken in a given environment), and identifying
+  that the installed `keplergl` package bundles a real Mapbox access
+  token into every HTML export regardless of configured basemap style,
+  then implementing the regex-based stripping step that makes exported
+  HTML safe to commit to a public repository (verified against
+  GitHub's secret-scanning push protection).
+
+Claude did **not** generate, fabricate, or select any OSM feature
+data. All data extracted by this tool comes directly from
+OpenStreetMap via standard extraction libraries (OSMnx / Overpass),
+never from AI generation.
+
+### Local knowledge and community guidelines
+
+Extraction logic follows standard OSM tagging conventions for the
+feature categories targeted (health, education, roads, boundaries).
+LGA boundary definitions were cross-checked against known
+administrative divisions for Ondo State rather than relying solely on
+OSM tags or AI-suggested defaults.
+
+### Limitations, risks, and uncertainty
+
+- OSM feature completeness varies significantly across Nigerian LGAs;
+  extraction results reflect underlying OSM data density, not
+  ground-truth completeness.
+- Strict mode may exclude legitimately tagged features with incomplete
+  metadata; permissive mode may include lower-confidence matches.
+- Boundary validation (`boundary._validate_and_standardize()`) is a
+  heuristic bounding-box/area check, not a full `admin_level`/relation-
+  type verification against an authoritative Nigerian administrative
+  boundary dataset. It catches the failure modes most likely to occur
+  (wrong place entirely, wrong scale entirely), not every possible
+  misresolution.
+- Auto-CRS selection relies on a longitude-based UTM zone formula and
+  should be manually verified for LGAs outside the tested set (Akure
+  North/South, plus the Abuja/Maiduguri reference points used in
+  tests).
