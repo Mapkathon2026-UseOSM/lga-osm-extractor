@@ -45,6 +45,7 @@ def log_run(
     warnings: list = None,
     exported: dict = None,
     target_crs: str = None,
+    layer_status: dict = None,
 ) -> str:
     """
     Write a JSON run log for a single LGA extraction.
@@ -76,6 +77,17 @@ def log_run(
         location rather than assuming a single fixed zone for all of
         Nigeria. Recorded here so the exact projection used for any
         given run is traceable later, not just assumed.
+    layer_status : dict, optional
+        The "_status" dict from layers.extract_layers(): {layer_name:
+        {"status", "feature_count", "attempts", "message"}}. Recorded
+        here verbatim under "layers" so the run log itself distinguishes
+        "queried successfully, genuinely found nothing" from "the query
+        failed" per layer, rather than that distinction only being
+        recoverable from the separate manifest.json (see manifest.py).
+        The full formal contract for downstream consumers is
+        manifest.json; this is the same information kept here too so
+        the run log remains self-contained for someone auditing a run
+        after the fact.
 
     Returns
     -------
@@ -91,6 +103,7 @@ def log_run(
         "target_crs": target_crs,
         "tag_config": tag_config,
         "warnings": warnings or [],
+        "layers": layer_status or {},
         "exported_layers": {
             k: v for k, v in (exported or {}).items() if not k.startswith("_")
         },

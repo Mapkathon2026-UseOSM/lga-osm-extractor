@@ -14,6 +14,8 @@ import geopandas as gpd
 import osmnx as ox
 import requests
 
+from .events import _emit
+
 # Default tag-to-layer configuration.
 # Each entry maps a layer name to the OSM tag filter used with
 # osmnx.features_from_polygon(). Users can extend or override this
@@ -78,17 +80,52 @@ def _is_transient_connection_error(exc: Exception) -> bool:
     return isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
 
 
-def _extract_single_layer(layer_name: str, tags: dict, polygon, start_delay: float):
+def _extract_single_layer(layer_name: str, tags: dict, polygon, start_delay: float, on_event=None):
     """
     Runs one layer's Overpass query, after waiting `start_delay` seconds
     (see REQUEST_STAGGER_SECONDS), retrying transient connection failures
-    up to MAX_RETRIES times with exponential backoff. Returns
-    (layer_name, gdf, warning_or_None, error_or_None). Never raises, so
-    this is safe to call from worker threads, strict-mode raising is
-    handled by the caller after all queries complete.
+    up to MAX_RETRIES times with exponential backoff.
+
+    Emits "stage_started" (once, after start_delay elapses and the
+    query actually begins), zero or more "retry" events (one per retry
+    attempt), and exactly one terminal event, "stage_completed" on
+    success (including success_empty) or "stage_failed" on failure, all
+    under stage="layer:{layer_name}". Runs inside a worker thread (see
+    extract_layers()), so `on_event` will be called from that thread,
+    not the caller's thread, see events.py's module docstring for what
+    that means for thread safety.
+
+    Returns (layer_name, gdf, status, exc), where `status` is a dict:
+        {
+            "status": "success" | "success_empty" | "failed",
+            "feature_count": int,
+            "attempts": int,
+            "message": str or None,
+        }
+    and `exc` is the underlying exception object on failure (None
+    otherwise) — kept separate from `status` (rather than folded into
+    it) purely so extract_layers() can `raise ... from exc` with a
+    proper traceback in strict mode; `status` itself is plain,
+    JSON-serializable data intended to be written straight into the
+    run log / extraction manifest.
+
+    This status dict is the thing that later gets promoted, unchanged,
+    into the run log / extraction manifest (see logging_utils.log_run()
+    and pipeline.extract_lga()) — the goal is that a caller consuming
+    the log never has to re-derive "did this actually fail, or did it
+    succeed and just find nothing" from an empty GeoDataFrame plus a
+    free-text warning string; that distinction is computed exactly
+    once, right here, and carried through as structured data.
+
+    Never raises, so this is safe to call from worker threads,
+    strict-mode raising is handled by the caller after all queries
+    complete.
     """
     if start_delay > 0:
         time.sleep(start_delay)
+
+    stage = f"layer:{layer_name}"
+    _emit(on_event, {"type": "stage_started", "stage": stage})
 
     last_exc = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -97,22 +134,49 @@ def _extract_single_layer(layer_name: str, tags: dict, polygon, start_delay: flo
             if gdf is None or gdf.empty:
                 # A successful query that found nothing, valid data, not
                 # a failure. Never raises, even in strict mode.
-                warning = f"Layer '{layer_name}' returned no features within the boundary."
-                return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), warning, None
-            return layer_name, gdf, None, None
+                message = f"Layer '{layer_name}' returned no features within the boundary."
+                status = {
+                    "status": "success_empty",
+                    "feature_count": 0,
+                    "attempts": attempt,
+                    "message": message,
+                }
+                _emit(on_event, {"type": "stage_completed", "stage": stage, "status": "success_empty",
+                                  "detail": "0 features"})
+                return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), status, None
+            status = {
+                "status": "success",
+                "feature_count": len(gdf),
+                "attempts": attempt,
+                "message": None,
+            }
+            _emit(on_event, {"type": "stage_completed", "stage": stage, "status": "success",
+                              "detail": f"{len(gdf):,} features"})
+            return layer_name, gdf, status, None
         except Exception as exc:
             last_exc = exc
             if attempt < MAX_RETRIES and _is_transient_connection_error(exc):
                 backoff = RETRY_BACKOFF_BASE_SECONDS * attempt
+                _emit(on_event, {"type": "retry", "stage": stage, "attempt": attempt + 1,
+                                  "max_attempts": MAX_RETRIES, "message": str(exc)})
                 time.sleep(backoff)
                 continue
             break
 
     message = f"Layer '{layer_name}' failed to extract after {MAX_RETRIES} attempt(s): {last_exc}"
-    return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), message, last_exc
+    status = {
+        "status": "failed",
+        "feature_count": 0,
+        "attempts": attempt,
+        "message": message,
+    }
+    _emit(on_event, {"type": "stage_failed", "stage": stage, "message": message})
+    return layer_name, gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), status, last_exc
 
 
-def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, strict: bool = False) -> dict:
+def extract_layers(
+    boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, strict: bool = False, on_event=None
+) -> dict:
     """
     Extract OSM feature layers within a boundary polygon.
 
@@ -157,6 +221,13 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
         finds zero features is NOT treated as a failure, that's valid
         data (and can itself be a meaningful completeness signal), so
         it never raises, and is only ever recorded as a warning.
+    on_event : callable, optional
+        Called with a plain event dict at each per-layer stage
+        transition (started / retry / completed / failed), see
+        events.py's module docstring for the full event schema and,
+        importantly, the thread-safety note: this callback WILL be
+        invoked concurrently from multiple worker threads, since
+        layers are queried concurrently. Defaults to None (no-op).
 
     Returns
     -------
@@ -167,9 +238,20 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
         retries) are also returned as empty GeoDataFrames rather than
         raising, so that one missing layer does not abort extraction of
         the others; in strict mode, a genuine failure raises
-        LayerExtractionError instead. Either way, failures/genuine
-        emptiness are reported via the returned dict's accompanying
-        "_warnings" list.
+        LayerExtractionError instead.
+
+        Two accompanying keys carry the same information in different
+        shapes:
+        - "_warnings": a flat list of human-readable strings, kept for
+          backward compatibility with existing callers/logs.
+        - "_status": {layer_name: {"status", "feature_count",
+          "attempts", "message"}}, the same per-layer outcome as
+          STRUCTURED, machine-readable data. "status" is one of
+          "success", "success_empty", "failed" — this is the field a
+          downstream consumer should actually branch on; never infer
+          "failed" from an empty GeoDataFrame, an empty GeoDataFrame is
+          also what a genuinely empty area (status="success_empty")
+          looks like, and those two situations must not be conflated.
 
     Raises
     ------
@@ -183,6 +265,7 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
     polygon = boundary_gdf.geometry.iloc[0]
     layers = {}
     warnings = []
+    layer_status = {}
     first_error = None
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_LAYER_QUERIES) as executor:
@@ -192,20 +275,22 @@ def extract_layers(boundary_gdf: gpd.GeoDataFrame, tag_config: dict = None, stri
             # requests are ever attempted at the same instant, even though
             # up to that many workers can be running concurrently overall.
             start_delay = (i // MAX_CONCURRENT_LAYER_QUERIES) * REQUEST_STAGGER_SECONDS
-            future = executor.submit(_extract_single_layer, layer_name, tags, polygon, start_delay)
+            future = executor.submit(_extract_single_layer, layer_name, tags, polygon, start_delay, on_event)
             futures[future] = layer_name
 
         for future in as_completed(futures):
-            layer_name, gdf, warning, error = future.result()
+            layer_name, gdf, status, exc = future.result()
             layers[layer_name] = gdf
-            if warning:
-                warnings.append(warning)
-            if error is not None and first_error is None:
-                first_error = (layer_name, warning, error)
+            layer_status[layer_name] = status
+            if status["message"]:
+                warnings.append(status["message"])
+            if status["status"] == "failed" and first_error is None:
+                first_error = (layer_name, status["message"], exc)
 
     if strict and first_error is not None:
-        _, message, error = first_error
-        raise LayerExtractionError(message) from error
+        _, message, exc = first_error
+        raise LayerExtractionError(message) from exc
 
     layers["_warnings"] = warnings
+    layers["_status"] = layer_status
     return layers

@@ -7,6 +7,7 @@ minimal attribute schema across layers and across LGA runs.
 """
 
 import geopandas as gpd
+import json
 
 # Fallback target CRS, used only if no boundary geometry is available
 # to auto-select an appropriate UTM zone from (see
@@ -16,10 +17,65 @@ import geopandas as gpd
 # multiple UTM zones (31N, 32N, 33N) depending on longitude.
 FALLBACK_CRS = "EPSG:32631"
 
-# Minimal, consistent attribute schema retained per layer.
-# OSM columns vary a lot between queries; this keeps exports
-# predictable and comparable across different LGA extractions.
-KEEP_COLUMNS = ["osmid", "name", "geometry"]
+# Core attribute schema retained for every layer, in every export
+# format. Kept deliberately tiny and universal (present regardless of
+# feature type), this is what every layer/LGA/format can rely on.
+CORE_COLUMNS = ["osmid", "name", "geometry"]
+
+# Backward-compatible alias: earlier versions of this module only had a
+# single flat KEEP_COLUMNS list (osmid/name/geometry only, dropping
+# every other OSM tag). Some callers/tests may still reference
+# KEEP_COLUMNS directly; keep it pointing at the same list so nothing
+# using the old name silently breaks.
+KEEP_COLUMNS = CORE_COLUMNS
+
+# Selected semantic OSM tags preserved per layer, on top of
+# CORE_COLUMNS, when present in a given query's results (OSM tagging
+# is inconsistent, most features will only have a handful of these).
+# This is what makes the extractor's output genuinely reusable beyond
+# this project's specific accessibility-scoring use case: a road's
+# surface/maxspeed/oneway, a hospital's emergency/beds/operator, etc.
+# are exactly the kind of attribute a *different* downstream consumer
+# would need and the previous CORE_COLUMNS-only schema silently
+# discarded for everyone. Chosen deliberately, not exhaustively.
+SEMANTIC_COLUMNS = {
+    "roads": [
+        "highway", "surface", "maxspeed", "lanes", "oneway",
+        "access", "bridge", "tunnel", "ref",
+    ],
+    "buildings": [
+        "building", "building:levels", "building:use",
+    ],
+    "health_facilities": [
+        "amenity", "healthcare", "beds", "emergency",
+        "operator", "opening_hours",
+    ],
+    "schools": [
+        "amenity", "isced:level", "school", "operator",
+    ],
+    "waterways": [
+        "waterway", "natural", "water", "intermittent",
+    ],
+    "landuse": [
+        "landuse",
+    ],
+}
+
+# Column added to every non-empty layer holding the feature's complete
+# original OSM tag set, JSON-encoded, as a controlled escape hatch:
+# SEMANTIC_COLUMNS above is a deliberately curated subset, not every
+# tag a feature might carry, and no fixed subset can anticipate every
+# future downstream use. A consumer that needs a tag not in
+# SEMANTIC_COLUMNS can still recover it from here without re-querying
+# OSM. See export.py for why this column is GeoJSON-only (dropped from
+# Shapefile exports).
+RAW_TAGS_COLUMN = "raw_tags"
+
+# Columns that are never meaningful as "OSM tags" in their own right
+# (geometry, our own standardized id/name, or OSMnx/geopandas index
+# artifacts), excluded from RAW_TAGS_COLUMN's captured tag set so it
+# doesn't just re-encode CORE_COLUMNS/SEMANTIC_COLUMNS back at itself.
+_NON_TAG_COLUMNS = {"geometry", "osmid", "name", "element_type", "id", RAW_TAGS_COLUMN}
 
 # Layers that downstream consumers (network routing in
 # akure_access.accessibility, isochrone snapping, completeness
@@ -146,8 +202,8 @@ def clean_layers(layers_dict: dict, boundary_gdf: gpd.GeoDataFrame = None) -> di
     ----------
     layers_dict : dict
         Mapping of layer_name -> raw GeoDataFrame, as returned by
-        layers.extract_layers(). May include a "_warnings" key,
-        which is passed through unchanged.
+        layers.extract_layers(). May include "_warnings" and "_status"
+        keys, both passed through unchanged.
     boundary_gdf : geopandas.GeoDataFrame, optional
         The resolved LGA boundary (see boundary.resolve_boundary()),
         used to auto-select the correct UTM zone for this LGA's actual
@@ -164,25 +220,35 @@ def clean_layers(layers_dict: dict, boundary_gdf: gpd.GeoDataFrame = None) -> di
     dict
         Mapping of layer_name -> cleaned GeoDataFrame, reprojected to
         the resolved target CRS, with invalid/empty/duplicate
-        geometries removed and a standardized minimal attribute schema.
+        geometries removed and a standardized attribute schema: always
+        CORE_COLUMNS (osmid, name, geometry), plus whichever of that
+        layer's SEMANTIC_COLUMNS (e.g. a road's highway/surface/
+        maxspeed, a hospital's emergency/beds/operator) are actually
+        present in this LGA's query results, plus a RAW_TAGS_COLUMN
+        holding every other original OSM tag as JSON, for anything not
+        in the curated semantic subset. See SEMANTIC_COLUMNS's
+        module-level docstring for the full rationale.
     """
     target_crs = resolve_target_crs(boundary_gdf)
 
     cleaned = {}
 
     for layer_name, gdf in layers_dict.items():
-        if layer_name == "_warnings":
+        if layer_name in ("_warnings", "_status"):
             cleaned[layer_name] = gdf
             continue
         cleaned[layer_name] = _clean_single_layer(
-            gdf, target_crs, collapse_to_point=(layer_name in POINT_LAYERS)
+            gdf, target_crs, collapse_to_point=(layer_name in POINT_LAYERS), layer_name=layer_name
         )
 
     return cleaned
 
 
 def _clean_single_layer(
-    gdf: gpd.GeoDataFrame, target_crs: str = FALLBACK_CRS, collapse_to_point: bool = False
+    gdf: gpd.GeoDataFrame,
+    target_crs: str = FALLBACK_CRS,
+    collapse_to_point: bool = False,
+    layer_name: str = None,
 ) -> gpd.GeoDataFrame:
     if gdf.empty:
         return gdf
@@ -214,6 +280,14 @@ def _clean_single_layer(
     if "name" not in gdf.columns:
         gdf["name"] = None
 
+    # Capture the complete original OSM tag set per feature, BEFORE any
+    # column trimming below, as a JSON-encoded escape hatch (see
+    # RAW_TAGS_COLUMN's module-level docstring for why this exists
+    # alongside the curated SEMANTIC_COLUMNS subset, rather than
+    # instead of it).
+    tag_columns = [c for c in gdf.columns if c not in _NON_TAG_COLUMNS]
+    gdf[RAW_TAGS_COLUMN] = gdf[tag_columns].apply(_row_tags_to_json, axis=1)
+
     # Drop duplicate geometries
     gdf = gdf.drop_duplicates(subset="geometry")
 
@@ -234,11 +308,48 @@ def _clean_single_layer(
     if collapse_to_point:
         gdf = _collapse_areas_to_points(gdf)
 
-    # Keep only the minimal standardized schema (retain geometry + id + name)
-    keep = [c for c in KEEP_COLUMNS if c in gdf.columns]
+    # Keep the core standardized schema plus this layer's curated
+    # semantic columns (whichever of them are actually present in this
+    # query's results, OSM tagging is inconsistent feature-to-feature)
+    # plus the full raw_tags escape hatch captured above. This is the
+    # actual fix for the old behavior of discarding every OSM attribute
+    # except osmid/name/geometry, see SEMANTIC_COLUMNS's module-level
+    # docstring for the rationale.
+    semantic = SEMANTIC_COLUMNS.get(layer_name, [])
+    keep = CORE_COLUMNS + [c for c in semantic if c in gdf.columns] + [RAW_TAGS_COLUMN]
+    # De-duplicate while preserving order, in case a semantic column
+    # name ever collided with a core column name.
+    keep = list(dict.fromkeys(keep))
     gdf = gdf[keep]
 
     return gdf.reset_index(drop=True)
+
+
+def _row_tags_to_json(row) -> str:
+    """
+    JSON-encode one feature's non-null OSM tag values into a single
+    string, for RAW_TAGS_COLUMN. Values that aren't natively
+    JSON-serializable (e.g. pandas NaT, numpy scalars, nested
+    lists OSMnx sometimes returns for multi-valued tags) are coerced to
+    plain str() rather than raising, since this column's job is to
+    preserve information for a human/downstream parser to read, not to
+    round-trip perfectly typed Python objects.
+    """
+    tags = {}
+    for col, value in row.items():
+        if value is None:
+            continue
+        try:
+            if isinstance(value, float) and value != value:  # NaN
+                continue
+        except TypeError:
+            pass
+        try:
+            json.dumps(value)
+            tags[col] = value
+        except (TypeError, ValueError):
+            tags[col] = str(value)
+    return json.dumps(tags, default=str)
 
 
 def _collapse_areas_to_points(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:

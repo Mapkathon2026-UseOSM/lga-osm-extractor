@@ -18,6 +18,8 @@ from .layers import extract_layers, DEFAULT_TAG_CONFIG, LayerExtractionError
 from .clean import clean_layers
 from .export import export_layers
 from .logging_utils import log_run
+from .manifest import build_manifest, write_manifest, MANIFEST_SCHEMA_VERSION
+from .events import ThreadSafeEventQueue, build_stage_order
 
 __all__ = [
     "extract_lga",
@@ -29,6 +31,11 @@ __all__ = [
     "clean_layers",
     "export_layers",
     "log_run",
+    "build_manifest",
+    "write_manifest",
+    "MANIFEST_SCHEMA_VERSION",
+    "ThreadSafeEventQueue",
+    "build_stage_order",
 ]
 
 # visualize.py depends on the optional 'keplergl' package. Import it

@@ -7,6 +7,7 @@ relations, with a manual-boundary fallback path.
 """
 
 import geopandas as gpd
+import pandas as pd
 from shapely.geometry.base import BaseGeometry
 import osmnx as ox
 
@@ -27,10 +28,40 @@ NIGERIA_BBOX = (2.5, 4.0, 15.0, 14.0)
 MIN_PLAUSIBLE_LGA_AREA_KM2 = 2
 MAX_PLAUSIBLE_LGA_AREA_KM2 = 10_000
 
+# Plausible OSM admin_level range for a Nigerian LGA-scale administrative
+# boundary. Nigeria's LGAs are conventionally tagged admin_level=6, but
+# this is kept as a wide, generous band (not a strict ==6 check) since
+# admin_level tagging in OSM is not perfectly consistent everywhere, and
+# this check is deliberately advisory (a warning), not authoritative --
+# see the "best-effort" note on this check below. A future pass that
+# fetches extratags/Overpass relation metadata directly could tighten
+# this to a firm admin_level == 6 hard check; this first pass does not,
+# since admin_level is not reliably present in OSMnx's default geocode
+# result and we don't want to force an extra network round-trip here.
+PLAUSIBLE_ADMIN_LEVEL_RANGE = (3, 10)
+
 
 class BoundaryResolutionError(Exception):
     """Raised when an LGA boundary cannot be confidently resolved from OSM."""
     pass
+
+
+def _first_value_or_none(gdf: gpd.GeoDataFrame, column: str):
+    """
+    Return gdf[column].iloc[0] if the column exists and its first value
+    is not missing, else None.
+
+    Used throughout the OSM metadata checks below: a raw Nominatim
+    result may either omit a column entirely, or include it with a
+    NaN/None value (pandas' two different spellings of "missing"), and
+    both should be treated identically as "we don't have this
+    information" rather than one silently passing an `is not None`
+    check that the other fails.
+    """
+    if column not in gdf.columns:
+        return None
+    value = gdf[column].iloc[0]
+    return None if pd.isna(value) else value
 
 
 def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path: str = None) -> gpd.GeoDataFrame:
@@ -119,6 +150,17 @@ def _validate_and_standardize(
         (MIN/MAX_PLAUSIBLE_LGA_AREA_KM2), catching the specific
         failure modes of "a single building/point was resolved" or "an
         entire state/the whole country was resolved."
+      - If OSM/Nominatim's result carries "class"/"type" tags (it does
+        for OSM-geocoded results; a manually-supplied boundary file
+        won't have these columns at all, so this check is skipped
+        entirely for the manual path), they must read
+        class="boundary", type="administrative". This directly catches
+        Nominatim resolving a same-named road, river, or place node
+        instead of an actual administrative boundary relation --
+        something the geographic/area checks above cannot distinguish,
+        since a wrongly-resolved feature can still have a plausible
+        centroid and, after being force-interpreted as a polygon, a
+        plausible-looking area.
 
     SOFT checks (recorded in the returned GeoDataFrame's
     "validation_warnings" column, but do NOT raise, these are worth a
@@ -129,6 +171,21 @@ def _validate_and_standardize(
         appears to mention the requested LGA name and (if given) state
         name. A mismatch here is often just Nominatim's naming/
         abbreviation conventions, not necessarily a wrong resolution, hence a warning, not a failure.
+      - If an "osm_type" column is present, warn if it is not
+        "relation". Administrative boundaries the size of an LGA are
+        essentially always OSM relations (a way or node resolving here
+        instead is suspicious), but this is kept as a warning rather
+        than a hard check since it is a secondary signal, not as
+        direct evidence of a wrong resolution as the class/type check
+        above.
+      - If an "admin_level" column is present (this is a best-effort
+        check: OSMnx's default geocode result does not reliably
+        include this field, so absence of the column produces no
+        warning at all -- we don't warn about something we have no
+        information on), warn if it does not parse as an integer
+        within PLAUSIBLE_ADMIN_LEVEL_RANGE. This is intentionally a
+        wide, advisory band, not a strict admin_level==6 check -- see
+        the constant's own comment for why.
 
     Parameters
     ----------
@@ -145,7 +202,23 @@ def _validate_and_standardize(
     -------
     geopandas.GeoDataFrame
         Single-row, WGS84, with "boundary_source" and
-        "validation_warnings" columns added.
+        "validation_warnings" columns added, plus three explicit OSM
+        metadata columns carried through from the raw geocode result
+        (all None for a manually-supplied boundary, which has no such
+        tags to carry through):
+          - "osm_class": the raw Nominatim "class" value (expected
+            "boundary" for a valid administrative resolution).
+          - "osm_type_tag": the raw Nominatim "type" value (expected
+            "administrative"). Named "osm_type_tag" rather than "type"
+            to avoid colliding with any "type" column already present
+            on the input GeoDataFrame, and to distinguish it from
+            "osm_type" (element type: node/way/relation), which is
+            surfaced separately below.
+          - "admin_level": the raw OSM admin_level value if the
+            geocode result happened to include one, else None. Kept as
+            a plain string (not cast to int) since OSM tag values are
+            strings by convention and a failed/unexpected value should
+            be visible as-is rather than silently coerced.
 
     Raises
     ------
@@ -199,8 +272,40 @@ def _validate_and_standardize(
             f"Consider supplying manual_boundary_path."
         )
 
-    # --- SOFT check: display_name sanity (warning only) ---
+    # --- HARD check: class=boundary, type=administrative ---
+    # Only evaluated if these columns are actually present -- a manually
+    # supplied boundary file never carries Nominatim's class/type tags,
+    # so this check is a no-op (not a failure) on the manual path. When
+    # present, this is the strongest available signal that OSM actually
+    # resolved an administrative boundary relation, rather than a
+    # same-named road, river, or point feature that happens to pass the
+    # geographic/area checks above (a wrongly-resolved feature can still
+    # have a plausible centroid and, once force-interpreted as a
+    # polygon, a plausible-looking area -- this check catches what those
+    # two cannot).
+    osm_class = _first_value_or_none(gdf, "class")
+    osm_type_tag = _first_value_or_none(gdf, "type")
+
+    if osm_class is not None and str(osm_class).lower() != "boundary":
+        raise BoundaryResolutionError(
+            f"Resolved boundary from '{source}' has OSM class='{osm_class}', "
+            f"expected 'boundary'. This strongly suggests OSM resolved a "
+            f"non-boundary feature (e.g. a road, river, or place node) rather "
+            f"than an administrative boundary. Consider supplying "
+            f"manual_boundary_path instead."
+        )
+    if osm_type_tag is not None and str(osm_type_tag).lower() != "administrative":
+        raise BoundaryResolutionError(
+            f"Resolved boundary from '{source}' has OSM type='{osm_type_tag}', "
+            f"expected 'administrative'. This strongly suggests OSM resolved a "
+            f"non-administrative boundary feature (e.g. a natural or landuse "
+            f"boundary) rather than an LGA administrative boundary. Consider "
+            f"supplying manual_boundary_path instead."
+        )
+
+    # --- SOFT checks (warning only) ---
     warnings = []
+
     if "display_name" in gdf.columns and (lga_name or state_name):
         display_name = str(gdf["display_name"].iloc[0]).lower()
         if lga_name and lga_name.split()[0].lower() not in display_name:
@@ -214,7 +319,44 @@ def _validate_and_standardize(
                 f"the requested state '{state_name}', worth a manual check."
             )
 
+    # SOFT check: relation-level osm_type. LGA-scale administrative
+    # boundaries are essentially always OSM relations (a multi-way
+    # collection); a way or node resolving here instead is suspicious,
+    # but kept as a warning since it's a secondary signal relative to
+    # the class/type hard check above.
+    osm_element_type = _first_value_or_none(gdf, "osm_type")
+    if osm_element_type is not None and str(osm_element_type).lower() != "relation":
+        warnings.append(
+            f"Resolved boundary's OSM element type is '{osm_element_type}', "
+            f"not 'relation'. LGA-scale administrative boundaries are "
+            f"typically relations; worth a manual check."
+        )
+
+    # SOFT, best-effort check: admin_level plausibility. Not all OSMnx
+    # geocode results include this field (it is not part of Nominatim's
+    # default response), so absence of the column produces no warning
+    # at all -- we only warn about a value we actually have.
+    admin_level = _first_value_or_none(gdf, "admin_level")
+    if admin_level is not None:
+        min_level, max_level = PLAUSIBLE_ADMIN_LEVEL_RANGE
+        try:
+            admin_level_int = int(admin_level)
+            if not (min_level <= admin_level_int <= max_level):
+                warnings.append(
+                    f"Resolved boundary has admin_level={admin_level}, outside "
+                    f"the plausible range ({min_level}-{max_level}) for a "
+                    f"Nigerian LGA-scale boundary; worth a manual check."
+                )
+        except (TypeError, ValueError):
+            warnings.append(
+                f"Resolved boundary has an unparseable admin_level value "
+                f"('{admin_level}'); worth a manual check."
+            )
+
     gdf = gdf.iloc[[0]].copy()
     gdf["boundary_source"] = source
     gdf["validation_warnings"] = "; ".join(warnings) if warnings else None
+    gdf["osm_class"] = osm_class
+    gdf["osm_type_tag"] = osm_type_tag
+    gdf["admin_level"] = admin_level
     return gdf

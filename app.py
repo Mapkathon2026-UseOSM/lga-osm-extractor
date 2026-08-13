@@ -13,11 +13,14 @@ Run with:
 import os
 import zipfile
 import io
+import threading
+import time
 
 import streamlit as st
 import leafmap.foliumap as leafmap
 
-from lga_extractor import extract_lga, BoundaryResolutionError
+from lga_extractor import extract_lga, BoundaryResolutionError, DEFAULT_TAG_CONFIG
+from lga_extractor.events import ThreadSafeEventQueue, build_stage_order
 
 st.set_page_config(page_title="Nigerian LGA OSM Extractor", page_icon="\U0001F5FA", layout="wide")
 
@@ -118,20 +121,110 @@ with st.form("extract_form"):
     submitted = st.form_submit_button("Extract OSM Data", type="primary")
 
 
-@st.cache_data(show_spinner=False)
-def _cached_extract(lga_name: str, state_name):
+@st.cache_resource(show_spinner=False)
+def _extraction_cache():
     """
-    Thin cache wrapper around extract_lga(). Extraction hits OpenStreetMap's
-    live Overpass API for six separate layers and is genuinely slow
-    (see the "why extraction can take a few minutes" note above), caching
-    means re-running the SAME lga_name/state_name combination again in
-    this session (or by another user, since Streamlit's cache is shared
-    across sessions by default) returns instantly instead of re-querying
-    Overpass from scratch. extract_lga()'s own output_dir defaults to a
-    path derived deterministically from lga_name, so the files already
-    written to disk on the first run remain valid for a cached return.
+    A plain dict, shared across reruns/sessions via st.cache_resource
+    (unlike st.cache_data, this returns the SAME dict object every
+    time rather than a copy, which is what we need to use it as a
+    mutable cache), keyed by (lga_name, state_name) -> the extract_lga()
+    result dict. Re-running the same LGA/state combination returns
+    instantly from here, WITHOUT the live progress UI below, since
+    there's nothing left to show progress for.
     """
-    return extract_lga(lga_name=lga_name, state_name=state_name)
+    return {}
+
+
+def _run_extraction_with_live_progress(lga_name: str, state_name):
+    """
+    Run extract_lga() in a background thread while rendering a live,
+    per-stage progress interface on the main Streamlit thread, driven
+    by the pipeline's on_event callback (see lga_extractor.events).
+
+    This has to run extraction in a background thread rather than
+    directly, extract_lga() is a single, several-minutes-long blocking
+    call; the only way to update the UI WHILE it runs (rather than only
+    before and after) is to have something else pushing events while
+    it's in flight, and Streamlit's own APIs are not thread-safe to
+    call directly from that background thread, hence draining a
+    ThreadSafeEventQueue on this (the main/UI) thread instead of
+    updating Streamlit from inside on_event itself.
+
+    Returns the extract_lga() result dict, or raises whatever exception
+    extract_lga() raised (propagated from the background thread).
+    """
+    stage_order = build_stage_order(DEFAULT_TAG_CONFIG)
+    stage_labels = {stage: stage.split(":", 1)[-1].replace("_", " ").title() for stage in stage_order}
+    stage_labels["boundary"] = "Resolving boundary"
+    stage_labels["cleaning"] = "Cleaning datasets"
+    stage_labels["export"] = "Exporting results"
+
+    events = ThreadSafeEventQueue()
+    outcome = {}  # populated by _worker: {"result": ...} or {"error": ...}
+
+    def _worker():
+        try:
+            outcome["result"] = extract_lga(lga_name=lga_name, state_name=state_name, on_event=events)
+        except Exception as exc:  # noqa: BLE001 - re-raised on the main thread below
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    start_time = time.monotonic()
+    thread.start()
+
+    # "done" / "running" / "retrying" / "failed", per stage, drives which
+    # symbol (✓ / ⟳ / ○ / retry note / ✗) each row below renders.
+    stage_state = {stage: "pending" for stage in stage_order}
+    stage_detail = {stage: "" for stage in stage_order}
+
+    with st.status(f"Extracting OSM data for {lga_name}...", expanded=True) as status_box:
+        progress_bar = st.progress(0.0)
+        row_placeholders = {stage: st.empty() for stage in stage_order}
+
+        def _render_row(stage):
+            symbol = {"pending": "○", "running": "⟳", "retrying": "⟳", "done": "✓", "failed": "✗"}[stage_state[stage]]
+            label = stage_labels[stage]
+            detail = f" — {stage_detail[stage]}" if stage_detail[stage] else ""
+            row_placeholders[stage].markdown(f"{symbol} {label}{detail}")
+
+        for stage in stage_order:
+            _render_row(stage)
+
+        while thread.is_alive() or not events.empty():
+            for event in events.drain():
+                stage = event.get("stage")
+                if stage not in stage_state:
+                    continue  # ignore anything from a future event type this UI doesn't know about yet
+                if event["type"] == "stage_started":
+                    stage_state[stage] = "running"
+                    stage_detail[stage] = ""
+                elif event["type"] == "retry":
+                    stage_state[stage] = "retrying"
+                    stage_detail[stage] = f"retrying: {event['attempt']} / {event['max_attempts']}"
+                elif event["type"] == "stage_completed":
+                    stage_state[stage] = "done"
+                    stage_detail[stage] = event.get("detail", "")
+                elif event["type"] == "stage_failed":
+                    stage_state[stage] = "failed"
+                    stage_detail[stage] = event.get("message", "failed")
+                _render_row(stage)
+
+            done_count = sum(1 for s in stage_state.values() if s in ("done", "failed"))
+            progress_bar.progress(done_count / len(stage_order))
+            time.sleep(0.2)
+
+        thread.join()
+
+        if "error" in outcome:
+            status_box.update(label=f"Extraction failed for {lga_name}", state="error")
+            raise outcome["error"]
+
+        duration_s = time.monotonic() - start_time
+        status_box.update(
+            label=f"Extraction complete for {lga_name} ({duration_s:.0f}s)", state="complete"
+        )
+
+    return outcome["result"]
 
 
 # Distinct color per layer type, applied to both the map styling below
@@ -151,23 +244,45 @@ if submitted:
     if not lga_name.strip():
         st.error("Please enter an LGA name.")
     else:
-        with st.spinner(
-            f"Resolving boundary and extracting OSM layers for {lga_name} "
-            f"(roads, buildings, waterways, land use, health facilities, schools). "
-            f"This can take a few minutes for larger or denser LGAs, this is normal, "
-            f"see \"About this tool\" above for why."
-        ):
-            try:
-                result = _cached_extract(lga_name.strip(), state_name.strip() or None)
-            except BoundaryResolutionError as exc:
-                st.error(f"Could not resolve LGA boundary: {exc}")
-                result = None
-            except Exception as exc:
-                st.error(f"Extraction failed: {exc}")
-                result = None
+        clean_lga_name = lga_name.strip()
+        clean_state_name = state_name.strip() or None
+        cache = _extraction_cache()
+        cache_key = (clean_lga_name.lower(), (clean_state_name or "").lower())
+
+        try:
+            if cache_key in cache:
+                # Already extracted this session, nothing to show live
+                # progress for, this matches the old cached-instant-return
+                # behavior exactly.
+                result = cache[cache_key]
+            else:
+                result = _run_extraction_with_live_progress(clean_lga_name, clean_state_name)
+                cache[cache_key] = result
+        except BoundaryResolutionError as exc:
+            st.error(f"Could not resolve LGA boundary: {exc}")
+            result = None
+        except Exception as exc:
+            st.error(f"Extraction failed: {exc}")
+            result = None
 
         if result:
             st.success(f"Extraction complete for {lga_name}.")
+
+            with st.expander("Extraction summary", expanded=False):
+                summary_rows = []
+                for layer_name, entry in result["exported"].items():
+                    if layer_name.startswith("_"):
+                        continue
+                    summary_rows.append(
+                        {"Layer": layer_name.replace("_", " ").title(),
+                         "Features": entry.get("feature_count", "?")}
+                    )
+                if summary_rows:
+                    st.table(summary_rows)
+                st.caption(
+                    f"CRS: {result['target_crs']}  •  Boundary: {result['boundary_source']}  •  "
+                    f"Warnings: {len(result['warnings'])}"
+                )
 
             if result["warnings"]:
                 with st.expander("Warnings"):
