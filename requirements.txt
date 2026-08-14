@@ -3,7 +3,13 @@ geopandas>=0.14
 shapely>=2.0
 pyogrio>=0.7
 pandas>=2.0
-streamlit>=1.32
+# >=1.37, not just >=1.32: app.py's results section uses st.fragment
+# (the stable, non-experimental name), which only exists from
+# Streamlit 1.37 onward (it shipped earlier as the experimental
+# st.experimental_fragment). >=1.32 would still technically satisfy
+# this constraint with an install where st.fragment doesn't exist yet,
+# and the app would crash with AttributeError at the results section.
+streamlit>=1.37
 leafmap>=0.31
 pytest>=8.0
 

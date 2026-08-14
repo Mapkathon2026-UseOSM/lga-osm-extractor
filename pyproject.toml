@@ -34,7 +34,7 @@ viz = [
     "keplergl>=0.3.2",
 ]
 app = [
-    "streamlit>=1.32",
+    "streamlit>=1.37",
     "leafmap>=0.31",
 ]
 dev = [
@@ -42,7 +42,7 @@ dev = [
 ]
 all = [
     "keplergl>=0.3.2",
-    "streamlit>=1.32",
+    "streamlit>=1.37",
     "leafmap>=0.31",
     "pytest>=8.0",
 ]
