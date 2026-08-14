@@ -8,6 +8,7 @@ LGA boundary.
 """
 
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import geopandas as gpd
@@ -29,6 +30,35 @@ DEFAULT_TAG_CONFIG = {
     "health_facilities": {"amenity": ["hospital", "clinic", "pharmacy"]},
     "schools": {"amenity": "school"},
 }
+
+# Public Overpass instances, each run by a different, independent
+# operator. When overpass-api.de (the default) starts actively
+# refusing connections mid-run — this server appears to rate-limit
+# based on a client's CUMULATIVE request count over a short rolling
+# window, not just simultaneous bursts, so even a staggered,
+# capped-concurrency run (see MAX_CONCURRENT_LAYER_QUERIES below) can
+# trip it partway through, after earlier layers already succeeded —
+# retrying against that SAME server cannot succeed until its block
+# window passes, which can outlast this module's entire retry budget.
+# Rotating to a different operator's mirror after a couple of failed
+# attempts sidesteps that: a fresh server has no reason to have
+# rate-limited a client it's never talked to.
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api",
+    "https://overpass.kumi.systems/api",
+    "https://overpass.private.coffee/api",
+]
+
+# osmnx exposes the Overpass endpoint as a single shared, mutable
+# global (ox.settings.overpass_url), not a per-call parameter. Layers
+# query concurrently (see MAX_CONCURRENT_LAYER_QUERIES), so switching
+# mirrors is only safe if every thread that MUTATES this global does
+# so under a lock: set it, issue the one request that needs it, then
+# restore it, all while holding the lock. The common case (every
+# attempt on the default, first mirror) never touches this lock at
+# all, since it never mutates the setting, so this adds no contention
+# to the normal, unblocked path.
+_OVERPASS_URL_LOCK = threading.Lock()
 
 # Each layer is an independent Overpass API query. Running all 6 fully
 # in parallel was tried first (max_workers=6, no stagger), and it made
@@ -52,7 +82,16 @@ REQUEST_STAGGER_SECONDS = 3
 # connections, timeouts). A single refused connection on a shared
 # public server is often transient, a short backoff and retry succeeds
 # where an immediate second attempt would just be refused again.
-MAX_RETRIES = 6
+# Kept deliberately low (4, not a larger number): retries beyond the
+# 2nd failure on a given mirror are rarely useful on their own, since
+# by then FAILURES_BEFORE_MIRROR_ROTATION has already kicked in and
+# switched to a different Overpass operator, see OVERPASS_MIRRORS.
+# Burning many more attempts against a server that's actively
+# rate-limiting this client just adds wait time without adding a
+# real chance of success. 4 gives the fallback mirror 2 attempts of
+# its own (rather than just 1), a little more room in case that
+# mirror also needs a moment to recover from a blip.
+MAX_RETRIES = 4
 RETRY_BACKOFF_BASE_SECONDS = 5
 
 
@@ -80,11 +119,51 @@ def _is_transient_connection_error(exc: Exception) -> bool:
     return isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
 
 
+def _query_overpass(polygon, tags: dict, mirror_url: str):
+    """
+    Run one osmnx.features_from_polygon() call against a specific
+    Overpass mirror, rather than whatever ox.settings.overpass_url
+    currently happens to be.
+
+    If `mirror_url` is the FIRST entry in OVERPASS_MIRRORS (the
+    default), this makes the call directly with no locking or global
+    mutation at all, that's the common, unblocked path, and it stays
+    exactly as cheap/concurrent as before this function existed.
+
+    For any OTHER mirror, this briefly takes _OVERPASS_URL_LOCK,
+    swaps ox.settings.overpass_url for the duration of the single
+    request, and restores it afterward, since that setting is a
+    shared global osmnx reads from any thread, see OVERPASS_MIRRORS'
+    module-level docstring for why this must be lock-protected rather
+    than just set-and-forget from a worker thread.
+    """
+    if mirror_url == OVERPASS_MIRRORS[0]:
+        return ox.features_from_polygon(polygon, tags)
+
+    with _OVERPASS_URL_LOCK:
+        original = ox.settings.overpass_url
+        ox.settings.overpass_url = mirror_url
+        try:
+            return ox.features_from_polygon(polygon, tags)
+        finally:
+            ox.settings.overpass_url = original
+
+
 def _extract_single_layer(layer_name: str, tags: dict, polygon, start_delay: float, on_event=None):
     """
     Runs one layer's Overpass query, after waiting `start_delay` seconds
     (see REQUEST_STAGGER_SECONDS), retrying transient connection failures
-    up to MAX_RETRIES times with exponential backoff.
+    up to MAX_RETRIES times with exponential backoff, AND rotating to a
+    different Overpass mirror (see OVERPASS_MIRRORS) after 2 consecutive
+    transient failures on the current one.
+
+    That rotation exists specifically because a "connection refused"
+    from a public Overpass instance frequently means that instance has
+    temporarily rate-limited this client based on cumulative request
+    volume, not a one-off network blip, retrying the SAME server
+    repeatedly cannot succeed until its block window passes, which can
+    outlast this function's entire retry budget. A different operator's
+    mirror has no reason to have rate-limited a client it's never seen.
 
     Emits "stage_started" (once, after start_delay elapses and the
     query actually begins), zero or more "retry" events (one per retry
@@ -127,10 +206,21 @@ def _extract_single_layer(layer_name: str, tags: dict, polygon, start_delay: flo
     stage = f"layer:{layer_name}"
     _emit(on_event, {"type": "stage_started", "stage": stage})
 
+    # How many consecutive failures to tolerate on ONE mirror before
+    # assuming it's actively rate-limiting this client (rather than a
+    # one-off blip) and rotating to the next. 2 gives a genuinely
+    # transient blip a real second chance without burning most of the
+    # retry budget on a server that's simply not going to un-block
+    # itself in time.
+    FAILURES_BEFORE_MIRROR_ROTATION = 2
+
+    mirror_index = 0
+    consecutive_failures_on_mirror = 0
     last_exc = None
     for attempt in range(1, MAX_RETRIES + 1):
+        mirror_url = OVERPASS_MIRRORS[mirror_index]
         try:
-            gdf = ox.features_from_polygon(polygon, tags)
+            gdf = _query_overpass(polygon, tags, mirror_url)
             if gdf is None or gdf.empty:
                 # A successful query that found nothing, valid data, not
                 # a failure. Never raises, even in strict mode.
@@ -156,9 +246,16 @@ def _extract_single_layer(layer_name: str, tags: dict, polygon, start_delay: flo
         except Exception as exc:
             last_exc = exc
             if attempt < MAX_RETRIES and _is_transient_connection_error(exc):
+                consecutive_failures_on_mirror += 1
+                retry_message = str(exc)
+                if consecutive_failures_on_mirror >= FAILURES_BEFORE_MIRROR_ROTATION and len(OVERPASS_MIRRORS) > 1:
+                    mirror_index = (mirror_index + 1) % len(OVERPASS_MIRRORS)
+                    consecutive_failures_on_mirror = 0
+                    next_mirror = OVERPASS_MIRRORS[mirror_index]
+                    retry_message = f"{retry_message} — switching to mirror {next_mirror}"
                 backoff = RETRY_BACKOFF_BASE_SECONDS * attempt
                 _emit(on_event, {"type": "retry", "stage": stage, "attempt": attempt + 1,
-                                  "max_attempts": MAX_RETRIES, "message": str(exc)})
+                                  "max_attempts": MAX_RETRIES, "message": retry_message})
                 time.sleep(backoff)
                 continue
             break

@@ -190,8 +190,13 @@ def _run_extraction_with_live_progress(lga_name: str, state_name):
         for stage in stage_order:
             _render_row(stage)
 
+        last_progress_fraction = None
+        last_boundary_note_at = 0
+
         while thread.is_alive() or not events.empty():
-            for event in events.drain():
+            new_events = events.drain()
+
+            for event in new_events:
                 stage = event.get("stage")
                 if stage not in stage_state:
                     continue  # ignore anything from a future event type this UI doesn't know about yet
@@ -209,9 +214,36 @@ def _run_extraction_with_live_progress(lga_name: str, state_name):
                     stage_detail[stage] = event.get("message", "failed")
                 _render_row(stage)
 
+            # Only push a progress-bar update to the browser when the
+            # fraction actually changed, not on every poll tick. A
+            # multi-minute run polling every 0.2s otherwise sends
+            # hundreds of no-op websocket messages, which on Streamlit
+            # Community Cloud's shared resources visibly compounds into
+            # the UI getting slower over the course of a single long
+            # run, this is what was actually causing that, not a
+            # genuinely slower extraction.
             done_count = sum(1 for s in stage_state.values() if s in ("done", "failed"))
-            progress_bar.progress(done_count / len(stage_order))
-            time.sleep(0.2)
+            fraction = done_count / len(stage_order)
+            if fraction != last_progress_fraction:
+                progress_bar.progress(fraction)
+                last_progress_fraction = fraction
+
+            # If we're still waiting on the very first stage (boundary
+            # resolution, a single call to OSM's Nominatim geocoder,
+            # which enforces a strict 1 request/second policy and can
+            # throttle under shared load) for a while, say so explicitly
+            # instead of leaving a bare spinner that looks identical
+            # whether it's slow or actually stuck.
+            elapsed = time.monotonic() - start_time
+            if stage_state.get("boundary") == "running" and elapsed - last_boundary_note_at >= 15:
+                stage_detail["boundary"] = f"still waiting on OSM's boundary lookup ({elapsed:.0f}s so far, this can be slow under shared load, not necessarily stuck)"
+                _render_row("boundary")
+                last_boundary_note_at = elapsed
+
+            # Poll less aggressively, this alone cuts total websocket
+            # traffic for a 5-minute run by more than half versus 0.2s,
+            # with no visible loss of responsiveness.
+            time.sleep(0.5)
 
         thread.join()
 

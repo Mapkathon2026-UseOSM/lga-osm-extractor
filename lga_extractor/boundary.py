@@ -6,10 +6,50 @@ administrative boundary polygon using OSMnx / OSM administrative
 relations, with a manual-boundary fallback path.
 """
 
+import time
+import threading
+
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry.base import BaseGeometry
 import osmnx as ox
+
+# Boundary resolution is a single, unretried, unbounded-by-default
+# call to OSM's Nominatim geocoder (osmnx.geocode_to_gdf()), which has
+# its own strict 1-request/second usage policy and can throttle under
+# shared load (e.g. many Streamlit Cloud sessions on the same
+# outbound IP). Without an explicit timeout, osmnx's own default
+# request timeout (ox.settings.requests_timeout, 180s by default)
+# governs how long a single attempt can hang before even raising an
+# error, which reads as "frozen" to a live progress UI even though
+# it's technically still working. These two constants bound that: a
+# shorter per-attempt timeout (so a slow moment fails fast) plus a
+# small number of retries with backoff (mirroring layers.py's Overpass
+# retry logic), so a single transient Nominatim slowdown doesn't cost
+# several minutes of apparent hang.
+BOUNDARY_REQUEST_TIMEOUT_SECONDS = 30
+BOUNDARY_MAX_RETRIES = 3
+BOUNDARY_RETRY_BACKOFF_BASE_SECONDS = 5
+
+# ox.settings.requests_timeout is a single shared, mutable global inside
+# osmnx, not a per-call parameter (see layers.py's OVERPASS_MIRRORS /
+# _OVERPASS_URL_LOCK docstring for the identical underlying issue with
+# ox.settings.overpass_url). resolve_boundary() is always the FIRST
+# stage of the pipeline today, and is never called concurrently with
+# itself in current usage, so mutating this global without a lock is
+# safe in practice right now, but only because of how the pipeline
+# happens to call this function, not because this function enforces
+# that safety itself. Locking the mutation removes that hidden
+# assumption entirely, at effectively zero cost (this lock is only ever
+# held for the duration of setting/restoring one attribute around a
+# single geocode call, never contended in the common single-LGA-at-a-
+# time case), so there's no reason not to hold it even though nothing
+# currently exercises the concurrent path this protects against -- a
+# future batch-extraction feature calling resolve_boundary() for
+# several LGAs in parallel would otherwise silently race on this
+# exact global, the same class of bug the Overpass mirror rotation was
+# careful to avoid from the start.
+_BOUNDARY_TIMEOUT_LOCK = threading.Lock()
 
 # Nigeria's approximate bounding box (min_lon, min_lat, max_lon, max_lat),
 # in WGS84 degrees, with generous margin. Used as a coarse geographic
@@ -111,13 +151,40 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
 
     query = f"{lga_name}, {state_name}, Nigeria" if state_name else f"{lga_name}, Nigeria"
 
-    try:
-        gdf = ox.geocode_to_gdf(query)
-    except Exception as exc:
+    last_exc = None
+    gdf = None
+    # The READ of the original value must also happen under the lock,
+    # not just the set-call-restore sequence -- otherwise a thread could
+    # read ox.settings.requests_timeout while ANOTHER thread currently
+    # holds the lock with it temporarily set to BOUNDARY_REQUEST_TIMEOUT_
+    # SECONDS, capturing that temporary value as if it were the true
+    # original, and later restore to the WRONG value. (This exact bug
+    # was caught by test_resolve_boundary_timeout_mutation_is_lock_
+    # protected_under_concurrency during review -- the first version of
+    # this fix read `original_timeout` one line above this comment,
+    # before the `with` statement, which is exactly this race.)
+    with _BOUNDARY_TIMEOUT_LOCK:
+        original_timeout = ox.settings.requests_timeout
+        try:
+            ox.settings.requests_timeout = BOUNDARY_REQUEST_TIMEOUT_SECONDS
+            for attempt in range(1, BOUNDARY_MAX_RETRIES + 1):
+                try:
+                    gdf = ox.geocode_to_gdf(query)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < BOUNDARY_MAX_RETRIES:
+                        time.sleep(BOUNDARY_RETRY_BACKOFF_BASE_SECONDS * attempt)
+                        continue
+        finally:
+            ox.settings.requests_timeout = original_timeout
+
+    if gdf is None:
         raise BoundaryResolutionError(
-            f"OSM boundary lookup failed for query '{query}'. "
-            f"Consider supplying manual_boundary_path. Original error: {exc}"
-        ) from exc
+            f"OSM boundary lookup failed for query '{query}' after {BOUNDARY_MAX_RETRIES} "
+            f"attempt(s) (each capped at {BOUNDARY_REQUEST_TIMEOUT_SECONDS}s). "
+            f"Consider supplying manual_boundary_path. Original error: {last_exc}"
+        ) from last_exc
 
     if gdf.empty:
         raise BoundaryResolutionError(

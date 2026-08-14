@@ -482,7 +482,7 @@ def test_extract_layers_emits_retry_events_on_transient_failure():
     """
     A layer that fails transiently then succeeds must emit "retry"
     events in between "stage_started" and "stage_completed", so a UI
-    can show "Retrying: 2 / 6" as described in the progress-interface
+    can show "Retrying: 2 / 4" as described in the progress-interface
     mockup this item is based on.
     """
     import threading
@@ -514,6 +514,122 @@ def test_extract_layers_emits_retry_events_on_transient_failure():
     retry_events = [e for e in roads_events if e["type"] == "retry"]
     assert len(retry_events) == 2  # failed on attempt 1 and 2, succeeded on 3
     assert roads_events[-1]["type"] == "stage_completed"
+
+
+def test_layer_rotates_to_next_overpass_mirror_after_repeated_failures():
+    """
+    Core fix for the "connection refused after 4 attempts, same
+    server" failure mode: after FAILURES_BEFORE_MIRROR_ROTATION
+    consecutive transient failures on one Overpass mirror, the layer
+    must retry against the NEXT mirror in OVERPASS_MIRRORS, not just
+    keep hammering the same (apparently rate-limiting) server.
+    """
+    from lga_extractor.layers import OVERPASS_MIRRORS
+    import requests
+
+    boundary = _synthetic_boundary()
+    events = []
+
+    calls_per_mirror = {url: 0 for url in OVERPASS_MIRRORS}
+
+    def mock_query_overpass(polygon, tags, mirror_url):
+        calls_per_mirror[mirror_url] += 1
+        if mirror_url == OVERPASS_MIRRORS[0]:
+            # The default mirror is permanently "blocked" for this test.
+            raise requests.exceptions.ConnectionError(
+                "Connection refused (simulated rate-limited server)"
+            )
+        # Any other mirror works immediately.
+        return gpd.GeoDataFrame({"osmid": [1]}, geometry=[Point(5.2, 7.25)], crs="EPSG:4326")
+
+    with patch("lga_extractor.layers._query_overpass", side_effect=mock_query_overpass), \
+         patch("lga_extractor.layers.RETRY_BACKOFF_BASE_SECONDS", 0):
+        result = extract_layers(boundary, strict=False, on_event=events.append)
+
+    # The default mirror should have been tried exactly
+    # FAILURES_BEFORE_MIRROR_ROTATION times before rotation kicked in,
+    # for every layer, not retried indefinitely.
+    assert calls_per_mirror[OVERPASS_MIRRORS[0]] == len(DEFAULT_TAG_CONFIG) * 2
+    # And the rotated-to mirror should have picked up the rest successfully.
+    assert calls_per_mirror[OVERPASS_MIRRORS[1]] >= len(DEFAULT_TAG_CONFIG)
+
+    for layer_name in DEFAULT_TAG_CONFIG:
+        assert result["_status"][layer_name]["status"] == "success"
+
+    retry_messages = [e["message"] for e in events if e["type"] == "retry" and "switching to mirror" in e.get("message", "")]
+    assert len(retry_messages) == len(DEFAULT_TAG_CONFIG)  # one rotation per layer
+
+
+def test_query_overpass_default_mirror_makes_no_global_setting_changes():
+    """
+    The common, unblocked path (first/default mirror) must call
+    osmnx directly with no mutation of ox.settings.overpass_url at
+    all — this is what keeps the happy path exactly as cheap and
+    lock-free as before mirror rotation was added.
+    """
+    from lga_extractor.layers import _query_overpass, OVERPASS_MIRRORS
+    import osmnx as ox
+
+    original = ox.settings.overpass_url
+    seen_during_call = {}
+
+    def mock_features(polygon, tags):
+        seen_during_call["value"] = ox.settings.overpass_url
+        return gpd.GeoDataFrame({"osmid": [1]}, geometry=[Point(5.2, 7.25)], crs="EPSG:4326")
+
+    try:
+        with patch("lga_extractor.layers.ox.features_from_polygon", side_effect=mock_features):
+            _query_overpass(None, {}, OVERPASS_MIRRORS[0])
+        assert seen_during_call["value"] == original
+        assert ox.settings.overpass_url == original
+    finally:
+        ox.settings.overpass_url = original
+
+
+def test_query_overpass_non_default_mirror_sets_and_restores_url():
+    """
+    Querying a non-default mirror must temporarily point
+    ox.settings.overpass_url at that mirror for the duration of the
+    call, and restore the original value afterward, regardless of
+    success or failure, so it never leaks into any other concurrent
+    or subsequent query.
+    """
+    from lga_extractor.layers import _query_overpass, OVERPASS_MIRRORS
+    import osmnx as ox
+
+    original = ox.settings.overpass_url
+    seen_during_call = {}
+
+    def mock_features(polygon, tags):
+        seen_during_call["value"] = ox.settings.overpass_url
+        return gpd.GeoDataFrame({"osmid": [1]}, geometry=[Point(5.2, 7.25)], crs="EPSG:4326")
+
+    try:
+        with patch("lga_extractor.layers.ox.features_from_polygon", side_effect=mock_features):
+            _query_overpass(None, {}, OVERPASS_MIRRORS[1])
+        assert seen_during_call["value"] == OVERPASS_MIRRORS[1]
+        assert ox.settings.overpass_url == original  # restored afterward
+    finally:
+        ox.settings.overpass_url = original
+
+
+def test_query_overpass_restores_url_even_on_failure():
+    from lga_extractor.layers import _query_overpass, OVERPASS_MIRRORS
+    import osmnx as ox
+    import requests
+
+    original = ox.settings.overpass_url
+
+    def mock_features(polygon, tags):
+        raise requests.exceptions.ConnectionError("simulated failure")
+
+    try:
+        with patch("lga_extractor.layers.ox.features_from_polygon", side_effect=mock_features):
+            with pytest.raises(requests.exceptions.ConnectionError):
+                _query_overpass(None, {}, OVERPASS_MIRRORS[1])
+        assert ox.settings.overpass_url == original
+    finally:
+        ox.settings.overpass_url = original
 
 
 def test_extract_lga_emits_full_stage_sequence(monkeypatch):
@@ -605,8 +721,8 @@ def test_build_manifest_reconciles_query_and_export_status():
         "roads": {"status": "success", "feature_count": 5, "attempts": 1, "message": None},
         "schools": {"status": "success_empty", "feature_count": 0, "attempts": 1,
                     "message": "Layer 'schools' returned no features within the boundary."},
-        "health_facilities": {"status": "failed", "feature_count": 0, "attempts": 6,
-                               "message": "Layer 'health_facilities' failed to extract after 6 attempt(s): boom"},
+        "health_facilities": {"status": "failed", "feature_count": 0, "attempts": 4,
+                               "message": "Layer 'health_facilities' failed to extract after 4 attempt(s): boom"},
     }
     exported = {
         "roads": {"geojson": "/tmp/roads.geojson", "shapefile": "/tmp/roads.shp", "feature_count": 4},
@@ -773,6 +889,157 @@ def _write_manual_boundary(geom, crs="EPSG:4326"):
     path = tempfile.mktemp(suffix=".geojson")
     gdf.to_file(path, driver="GeoJSON")
     return path
+
+
+def test_resolve_boundary_retries_transient_geocode_failure():
+    """
+    A Nominatim lookup that fails transiently (timeout, connection
+    error) on its first attempt(s) but succeeds within
+    BOUNDARY_MAX_RETRIES must still return a result, not raise, and
+    must not wait anywhere near boundary.BOUNDARY_MAX_RETRIES *
+    ox.settings' DEFAULT (180s) timeout to do it, this is the fix for
+    a single slow/rate-limited Nominatim moment reading as a multi-
+    minute hang in a live progress UI.
+    """
+    from lga_extractor import boundary as boundary_module
+
+    call_count = {"n": 0}
+
+    def flaky_geocode(query):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise TimeoutError("simulated slow/unavailable Nominatim")
+        return gpd.GeoDataFrame(
+            {"boundary_source": ["osm_geocode:test"]},
+            geometry=[box(5.15, 7.2, 5.25, 7.3)],
+            crs="EPSG:4326",
+        )
+
+    with patch("lga_extractor.boundary.ox.geocode_to_gdf", side_effect=flaky_geocode), \
+         patch("lga_extractor.boundary.BOUNDARY_RETRY_BACKOFF_BASE_SECONDS", 0):
+        result = resolve_boundary("Akure North", "Ondo")
+
+    assert call_count["n"] == 3
+    assert not result.empty
+
+
+def test_resolve_boundary_gives_up_after_max_retries_with_clear_error():
+    """
+    A geocode lookup that fails on every attempt must raise
+    BoundaryResolutionError (not hang indefinitely or raise the raw
+    underlying exception), with the attempt count visible in the
+    message so a "why did this fail" investigation doesn't start blind.
+    """
+    from lga_extractor import boundary as boundary_module
+
+    def always_fails(query):
+        raise TimeoutError("Nominatim did not respond")
+
+    with patch("lga_extractor.boundary.ox.geocode_to_gdf", side_effect=always_fails), \
+         patch("lga_extractor.boundary.BOUNDARY_RETRY_BACKOFF_BASE_SECONDS", 0):
+        with pytest.raises(BoundaryResolutionError, match="after 3 attempt"):
+            resolve_boundary("Akure North", "Ondo")
+
+
+def test_resolve_boundary_bounds_and_restores_ox_timeout():
+    """
+    resolve_boundary() must temporarily lower ox.settings.timeout to
+    BOUNDARY_REQUEST_TIMEOUT_SECONDS for its own geocode call (so one
+    slow attempt fails fast enough to actually retry, rather than
+    osmnx's own much longer default timeout governing each attempt),
+    and must restore the original value afterward, regardless of
+    success or failure, so this doesn't leak a changed global setting
+    into any other osmnx call made later in the same process (e.g.
+    layers.extract_layers()'s Overpass queries).
+    """
+    from lga_extractor import boundary as boundary_module
+    import osmnx as ox
+
+    original = ox.settings.requests_timeout
+    seen_timeout_during_call = {}
+
+    def capturing_geocode(query):
+        seen_timeout_during_call["value"] = ox.settings.requests_timeout
+        return gpd.GeoDataFrame(
+            {"boundary_source": ["osm_geocode:test"]},
+            geometry=[box(5.15, 7.2, 5.25, 7.3)],
+            crs="EPSG:4326",
+        )
+
+    try:
+        with patch("lga_extractor.boundary.ox.geocode_to_gdf", side_effect=capturing_geocode):
+            resolve_boundary("Akure North", "Ondo")
+        assert seen_timeout_during_call["value"] == boundary_module.BOUNDARY_REQUEST_TIMEOUT_SECONDS
+        assert ox.settings.requests_timeout == original
+    finally:
+        ox.settings.requests_timeout = original
+
+
+def test_resolve_boundary_timeout_mutation_is_lock_protected_under_concurrency():
+    """
+    ox.settings.requests_timeout is a single shared, mutable global, not
+    a per-call parameter -- resolve_boundary() must serialize its own
+    set-call-restore sequence via _BOUNDARY_TIMEOUT_LOCK so two
+    concurrent resolve_boundary() calls (e.g. a future batch-extraction
+    feature running several LGAs in parallel) can't interleave and race
+    on this global, one call's "restore" clobbering another's still-in-
+    progress "set". This directly exercises that lock exists and does
+    its job, rather than merely trusting the single-threaded happy-path
+    test above.
+
+    Two threads each call resolve_boundary() with an artificially slow,
+    concurrency-observing mock geocode function; if the lock is doing
+    its job, the two calls' timeout-mutation windows never overlap --
+    at every instant one thread's mocked geocode is running, the OTHER
+    thread must not yet have entered its own mutation window. If the
+    lock were missing (or broken), both threads' windows would overlap
+    on a real GIL-released sleep.
+    """
+    import threading
+    import time as time_module
+    from lga_extractor import boundary as boundary_module
+    import osmnx as ox
+
+    original = ox.settings.requests_timeout
+    active_count = {"value": 0}
+    max_concurrent_seen = {"value": 0}
+    count_lock = threading.Lock()
+
+    def slow_concurrency_observing_geocode(query):
+        with count_lock:
+            active_count["value"] += 1
+            max_concurrent_seen["value"] = max(max_concurrent_seen["value"], active_count["value"])
+        time_module.sleep(0.1)  # long enough for a real thread-scheduling window
+        with count_lock:
+            active_count["value"] -= 1
+        return gpd.GeoDataFrame(
+            {"boundary_source": ["osm_geocode:test"]},
+            geometry=[box(5.15, 7.2, 5.25, 7.3)],
+            crs="EPSG:4326",
+        )
+
+    results = []
+
+    def run_one():
+        with patch("lga_extractor.boundary.ox.geocode_to_gdf", side_effect=slow_concurrency_observing_geocode):
+            results.append(resolve_boundary("Akure North", "Ondo"))
+
+    try:
+        threads = [threading.Thread(target=run_one) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(results) == 2
+        # The core assertion: the lock forces the two calls' geocode
+        # windows to be strictly sequential, never concurrent.
+        assert max_concurrent_seen["value"] == 1
+        # And the global is left in its original state afterward,
+        # regardless of how the two calls interleaved.
+        assert ox.settings.requests_timeout == original
+    finally:
+        ox.settings.requests_timeout = original
 
 
 def test_resolve_boundary_accepts_plausible_akure_sized_boundary():
