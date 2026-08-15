@@ -6,6 +6,7 @@ for a single Nigerian LGA end-to-end: boundary resolution -> layer
 extraction -> cleaning -> export -> run logging.
 """
 
+import gc
 import os
 
 from .boundary import resolve_boundary
@@ -109,6 +110,21 @@ def extract_lga(
     cleaned.pop("_warnings", None)
     cleaned.pop("_status", None)
     _emit(on_event, {"type": "stage_completed", "stage": "cleaning"})
+
+    # raw_layers (pre-cleaning GeoDataFrames for every layer, held all
+    # at once) is no longer needed once cleaned/ exists -- everything
+    # downstream (export, manifest, log) reads from `cleaned` or the
+    # already-extracted `layer_status`/`warnings` values above, never
+    # from raw_layers itself. For a dense urban LGA (e.g. Lagos-scale
+    # buildings), raw_layers can hold tens of thousands of geometries
+    # per layer; keeping both the raw and cleaned copies alive through
+    # export roughly doubles this function's peak memory for no
+    # benefit. Dropping the reference and forcing a collect here (heavy
+    # shapely/geopandas objects aren't always reclaimed promptly by
+    # Python's own generational GC) lets that memory go before export,
+    # rather than after this whole function returns.
+    del raw_layers
+    gc.collect()
 
     _emit(on_event, {"type": "stage_started", "stage": "export"})
     exported = export_layers(cleaned, output_dir)

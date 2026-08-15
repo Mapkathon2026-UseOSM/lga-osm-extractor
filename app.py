@@ -15,6 +15,7 @@ import zipfile
 import io
 import threading
 import time
+from collections import OrderedDict
 
 import streamlit as st
 import leafmap.foliumap as leafmap
@@ -121,18 +122,34 @@ with st.form("extract_form"):
     submitted = st.form_submit_button("Extract OSM Data", type="primary")
 
 
+# Max number of distinct (lga_name, state_name) extractions kept in
+# _extraction_cache at once, across ALL users/sessions of this app
+# (Streamlit Community Cloud runs one shared process). Each cached
+# entry itself is lightweight -- file paths, feature counts, warnings,
+# not raw GeoDataFrames, see extract_lga()'s return value -- so this
+# cap isn't about any single entry's size. It's about the cache
+# otherwise growing forever for the lifetime of the deployed app,
+# with no reboot in between, as more and more distinct LGAs get
+# extracted by different visitors over days/weeks.
+MAX_CACHED_EXTRACTIONS = 20
+
+
 @st.cache_resource(show_spinner=False)
 def _extraction_cache():
     """
-    A plain dict, shared across reruns/sessions via st.cache_resource
+    An OrderedDict, shared across reruns/sessions via st.cache_resource
     (unlike st.cache_data, this returns the SAME dict object every
     time rather than a copy, which is what we need to use it as a
     mutable cache), keyed by (lga_name, state_name) -> the extract_lga()
     result dict. Re-running the same LGA/state combination returns
     instantly from here, WITHOUT the live progress UI below, since
     there's nothing left to show progress for.
+
+    Ordered so the LRU eviction below (see the `submitted` block) can
+    drop the oldest entry once MAX_CACHED_EXTRACTIONS is exceeded,
+    rather than growing without bound for as long as the app stays up.
     """
-    return {}
+    return OrderedDict()
 
 
 def _run_extraction_with_live_progress(lga_name: str, state_name):
@@ -285,11 +302,19 @@ if submitted:
             if cache_key in cache:
                 # Already extracted this session, nothing to show live
                 # progress for, this matches the old cached-instant-return
-                # behavior exactly.
+                # behavior exactly. move_to_end() marks it as the most
+                # recently used entry, so a popular LGA that keeps
+                # getting re-requested isn't the one evicted below.
+                cache.move_to_end(cache_key)
                 result = cache[cache_key]
             else:
                 result = _run_extraction_with_live_progress(clean_lga_name, clean_state_name)
                 cache[cache_key] = result
+                # Evict the least-recently-used entry once over the cap,
+                # rather than letting the cache grow for the app's
+                # entire uptime, see MAX_CACHED_EXTRACTIONS above.
+                while len(cache) > MAX_CACHED_EXTRACTIONS:
+                    cache.popitem(last=False)
         except BoundaryResolutionError as exc:
             st.error(f"Could not resolve LGA boundary: {exc}")
             result = None

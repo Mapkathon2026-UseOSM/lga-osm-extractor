@@ -55,9 +55,10 @@ pinned dependency set (`requirements.txt`) and a pinned Python version
 (`runtime.txt`, `python-3.11`), deliberately, an earlier deploy broke
 when Streamlit Cloud resolved a newer, untested Python/package
 combination on its own; see the sibling
-`akure-accessibility-dashboard` repo's `AI_DISCLOSURE.md` for the full
-story of that failure mode, since it happened there first and both
-repos now pin the same way to avoid repeating it.
+`akure-accessibility-dashboard` repo's README.md ("AI Disclosure" →
+"Limitations, risks, and uncertainty") for the full story of that
+failure mode, since it happened there first and both repos now pin the
+same way to avoid repeating it.
 
 ## What it does
 
@@ -196,7 +197,9 @@ lga-osm-extractor/
 ├── kepler_config_lga_preview.json
 │
 ├── examples/                  # worked tutorial notebook, see examples/README.md
-├── docs/                      # how to regenerate the preview screenshot
+├── docs/                  # Extractor documentation, Learning guide and screenshot
+│   └─── Nigerian_LGA_OSM_Extractor_Documentation          
+│ 
 ├── tests/                     # see tests/README.md
 ├── visuals/                   # kepler.gl standalone HTML exports
 └── output/{lga_name}/         # extraction output: GeoJSON, Shapefile, manifest.json, run_log.json
@@ -281,6 +284,63 @@ presence, an empty file, or a hardcoded assumption:
 the way a bare empty GeoDataFrame did before this existed. See
 `lga_extractor/manifest.py`'s module docstring for the full schema and
 rationale.
+
+## Beyond Nigeria: a path to global generalization
+
+This tool is generalized across all 774 Nigerian LGAs, not just Akure
+North/South, today. It was not built to be Nigeria-only by accident,
+and several pieces of its architecture already generalize further
+still, worth being explicit about exactly where that seam is, what's
+already portable, and what real work would remain to take this
+worldwide.
+
+**Already global, no changes needed.** `clean.py`'s
+`utm_epsg_for_longitude()` computes the correct metric coordinate
+system from any latitude/longitude pair on Earth, using the standard
+UTM zone formula, not a Nigeria-specific lookup table. The six
+extracted layers and every semantic tag preserved for them (`highway`,
+`amenity`, `healthcare`, `isced:level`, ...) are standard OpenStreetMap
+tagging conventions, not regional ones.
+
+**A moderate, mechanical tweak.** `boundary.resolve_boundary()`
+currently builds its Nominatim query as
+`"{lga_name}, {state_name}, Nigeria"`, hardcoding both the country and
+a fixed two-level (state → LGA) administrative hierarchy. Generalizing
+this means accepting a free-form place-name query or a list of
+parent-area qualifiers instead, since administrative structures vary
+widely (France's communes, the US's counties, Kenya's counties and
+wards, Nigeria's own state/LGA system are not interchangeable
+two-level hierarchies). The `lga_name` parameter name itself, echoed
+across dozens of functions, tests, docstrings, and output paths
+(`output/{lga_name}/`), would need a matching, purely mechanical rename
+sweep (e.g. to `region_name`).
+
+**A genuinely hard problem, not a tweak.** `boundary.py`'s hard
+validation checks — `MIN_PLAUSIBLE_LGA_AREA_KM2` /
+`MAX_PLAUSIBLE_LGA_AREA_KM2` and the `NIGERIA_BBOX` geographic check —
+exist specifically to catch a wrongly resolved administrative
+boundary, and they work precisely because Nigerian LGAs occupy a
+known, narrow size band. That band isn't universal: a French commune
+is often under 1 km²; a US county can exceed 10,000 km²; the right
+plausible range depends on both country *and* which OSM `admin_level`
+is being targeted. Generalizing this correctly needs a real country +
+admin-level reference table, a genuine data task, not a wider hardcoded
+constant. Doing this carelessly, e.g. simply removing the hard checks
+to "support anywhere", would silently undo this project's own
+boundary-correctness hardening (see "What it does" above); any future
+generalization work should treat this as its own scoped sub-project,
+not a side effect of a rename sweep.
+
+**Why this wasn't done for this submission.** The size-band problem
+above needs real reference data this project doesn't currently have,
+and doing it carelessly would weaken validation this project just
+spent real effort strengthening. This submission is scoped to
+rigorously solve Akure's accessibility problem specifically; a
+partially-generalized tool wouldn't make that story stronger, it would
+dilute the depth of what's actually been validated for the LGAs this
+tool set out to serve. The architecture already points toward global
+generalization, what remains is one genuinely hard data problem and a
+set of mechanical renames, not a redesign.
 
 ## License
 
