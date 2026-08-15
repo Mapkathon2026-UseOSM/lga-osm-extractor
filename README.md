@@ -197,9 +197,8 @@ lga-osm-extractor/
 ├── kepler_config_lga_preview.json
 │
 ├── examples/                  # worked tutorial notebook, see examples/README.md
-├── docs/                  # Extractor documentation, Learning guide and screenshot
-│   └─── Nigerian_LGA_OSM_Extractor_Documentation          
-│ 
+├── docs/  
+├  └── Nigerian_LGA_OSM_Extractor_Documentation          
 ├── tests/                     # see tests/README.md
 ├── visuals/                   # kepler.gl standalone HTML exports
 └── output/{lga_name}/         # extraction output: GeoJSON, Shapefile, manifest.json, run_log.json
@@ -288,8 +287,8 @@ rationale.
 ## Beyond Nigeria: a path to global generalization
 
 This tool is generalized across all 774 Nigerian LGAs, not just Akure
-North/South, today. It was not built to be Nigeria-only by accident,
-and several pieces of its architecture already generalize further
+North/South, today. It was not built to be Nigeria-only and several pieces 
+of its architecture already generalize further
 still, worth being explicit about exactly where that seam is, what's
 already portable, and what real work would remain to take this
 worldwide.
@@ -434,6 +433,22 @@ this repository:
   concurrency caused OSM's public Overpass mirror to refuse every
   connection outright.
 
+- **Overpass mirror rotation and bounded boundary resolution** —
+  `layers.py`'s `OVERPASS_MIRRORS` rotation (switch mirrors after 2
+  consecutive failures against one, rather than retrying a server with
+  no reason to unblock soon) and `boundary.py`'s
+  `BOUNDARY_REQUEST_TIMEOUT_SECONDS` / `BOUNDARY_MAX_RETRIES` (bounding
+  what was previously OSMnx's 180-second default timeout, indistinguishable
+  from a frozen app in a live UI). Both mutate a shared `osmnx` global
+  (`overpass_url`, `requests_timeout` respectively) rather than a
+  per-request parameter, so both are lock-protected against the
+  concurrent worker threads that query layers in parallel — a first
+  version of the boundary-timeout lock had a real, narrow race (reading
+  the "original" value to restore *outside* the lock, letting one
+  thread capture another's temporary value), caught by a dedicated
+  concurrency test before shipping, see `lga_extractor/README.md` for
+  the full account.
+
 - **UI-agnostic progress events** — `events.py`'s event schema
   (`stage_started` / `retry` / `stage_completed` / `stage_failed` /
   `pipeline_completed`) and `ThreadSafeEventQueue`, designed so
@@ -442,6 +457,20 @@ this repository:
   plus `app.py`'s consuming side: a background-thread extraction with
   a `st.status()`-based live checklist, retry counters, and a
   post-extraction summary table.
+
+- **Results persistence across Streamlit reruns** — `app.py`'s
+  extraction-results section (map, summary, download button) is now
+  stored in `st.session_state` and rendered inside an `st.fragment`,
+  fixing a real bug: clicking the Download button itself triggers a
+  Streamlit script rerun (as any widget interaction does), and since
+  the results section previously only rendered inside
+  `if submitted:` — true only for the exact run the form's submit
+  click caused — clicking Download made the whole results section,
+  including the download button itself, disappear on the very next
+  rerun. Requires `streamlit>=1.37` (`st.fragment`'s stable,
+  non-experimental name), the dependency floor was bumped from `>=1.32`
+  alongside this fix, `>=1.32` would still technically satisfy the old
+  constraint on an install where `st.fragment` doesn't exist yet.
 
 - **kepler.gl preview map helper and credential hygiene** —
   `visualize.py`'s `build_preview_map()` and `_strip_mapbox_token()`:
