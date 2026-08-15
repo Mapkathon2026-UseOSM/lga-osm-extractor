@@ -1,12 +1,13 @@
 # Nigerian LGA OSM Extractor
 
-[![Tests](https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml/badge.svg)](https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml)
+[![Tests](https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml/badge.svg)]
+(https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml)
 
 **Live demo:** https://lga-extractor.streamlit.app/ · **GitHub:** https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor
 
 Turn a plain Nigerian LGA name into a clean, ready-to-use, richly
-attributed OSM dataset — roads, buildings, waterways, land use, health
-facilities, and schools — with a verifiable boundary, a correct
+attributed OSM dataset which includes roads, buildings, waterways, land use, health
+facilities, and schools  with a verifiable boundary, a correct
 projection, and a formal manifest of exactly what was extracted, with
 no Overpass query syntax, GIS software, or manual data wrangling
 required.
