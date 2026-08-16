@@ -1,12 +1,13 @@
 # Nigerian LGA OSM Extractor
 
-[![Tests](https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml/badge.svg)](https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml)
+[![Tests](https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml/badge.svg)]
+(https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor/actions/workflows/test.yml)
 
 **Live demo:** https://lga-extractor.streamlit.app/ · **GitHub:** https://github.com/Mapkathon2026-UseOSM/lga-osm-extractor
 
 Turn a plain Nigerian LGA name into a clean, ready-to-use, richly
-attributed OSM dataset — roads, buildings, waterways, land use, health
-facilities, and schools — with a verifiable boundary, a correct
+attributed OSM dataset which includes roads, buildings, waterways, land use, health
+facilities, and schools  with a verifiable boundary, a correct
 projection, and a formal manifest of exactly what was extracted, with
 no Overpass query syntax, GIS software, or manual data wrangling
 required.
@@ -27,8 +28,8 @@ removes them entirely, for any of Nigeria's 774 LGAs.
 > knows the friction of hand-writing Overpass queries, resolving
 > inconsistent administrative boundaries, and guessing which UTM zone
 > applies. This tool removes that friction entirely, and does so with
-> a traceable, auditable output — not just a file, but a signed record
-> of how that file was produced — so more people can go from "I have
+> a traceable, auditable output - not just a file, but a signed record
+> of how that file was produced - so more people can go from "I have
 > an idea" to "I have data I can actually trust" and build something
 > real with OpenStreetMap.
 
@@ -44,7 +45,7 @@ streamlit run app.py
 ```
 
 Type in an LGA name, watch a **live, per-stage extraction progress
-view** (boundary resolution, each layer's query — including retry
+view** (boundary resolution, each layer's query - including retry
 counts if Overpass is briefly unavailable, cleaning, export), preview
 every layer on an interactive map, and download everything as a zip
 alongside an extraction summary (feature counts per layer, resolved
@@ -65,7 +66,7 @@ same way to avoid repeating it.
 Given an LGA name (e.g. `"Akure North"`, state `"Ondo"`):
 
 1. **Resolves the boundary** from OSM, with a manual-boundary fallback
-   and a two-tier sanity check — hard checks (implausible location or
+   and a two-tier sanity check - hard checks (implausible location or
    size) that reject a clearly wrong result outright, plus a soft
    `admin_level`/name plausibility check against OSM's own
    administrative-boundary metadata, so a boundary that resolves to
@@ -79,7 +80,7 @@ Given an LGA name (e.g. `"Akure North"`, state `"Ondo"`):
 3. **Cleans and standardizes**: reprojects to the correct UTM zone for
    that LGA's actual location (auto-selected, not hardcoded, since
    Nigeria spans three UTM zones), repairs invalid geometries, removes
-   duplicates, and standardizes the attribute schema — while
+   duplicates, and standardizes the attribute schema - while
    **preserving the semantically meaningful OSM tags per layer** (a
    road's `highway`/`surface`/`maxspeed`/`lanes`/`oneway`, a health
    facility's `amenity`/`healthcare`/`beds`/`emergency`/`operator`, a
@@ -92,9 +93,9 @@ Given an LGA name (e.g. `"Akure North"`, state `"Ondo"`):
    deliberately, since Shapefile's 10-character field-name limit would
    silently truncate or collide the richer semantic columns).
 5. **Writes a formal extraction manifest** (`manifest.json`) recording,
-   per layer, exactly what happened — queried successfully with N
+   per layer, exactly what happened - queried successfully with N
    features, queried successfully and genuinely found zero, or failed
-   after retries and why — plus the resolved CRS and boundary source,
+   after retries and why - plus the resolved CRS and boundary source,
    so a downstream consumer never has to guess what an empty file
    means, and a `run_log.json` carrying the same structured status
    alongside package versions and warnings, for full auditability.
@@ -144,7 +145,7 @@ from lga_extractor.events import ThreadSafeEventQueue
 
 events = ThreadSafeEventQueue()
 # run extract_lga(..., on_event=events) in a background thread, then
-# drain events.drain() on your UI thread to render a live checklist —
+# drain events.drain() on your UI thread to render a live checklist,
 # see app.py for the full working pattern (a st.status() checklist
 # with retry counters and a progress bar).
 ```
@@ -197,12 +198,34 @@ lga-osm-extractor/
 ├── kepler_config_lga_preview.json
 │
 ├── examples/                  # worked tutorial notebook, see examples/README.md
-├── docs/  
-├  └── Nigerian_LGA_OSM_Extractor_Documentation          
+├── docs/                      # standalone PDF documentation, see "Documentation" below
+│   └── Nigerian_LGA_OSM_Extractor_Documentation.pdf
 ├── tests/                     # see tests/README.md
 ├── visuals/                   # kepler.gl standalone HTML exports
 └── output/{lga_name}/         # extraction output: GeoJSON, Shapefile, manifest.json, run_log.json
 ```
+
+**Folder guide**, for anyone jumping straight to a specific piece:
+
+- **`lga_extractor/`**: the installable package and the only place
+  extraction/cleaning/export logic actually lives. Start here for
+  anything about *how* extraction works. See `lga_extractor/README.md`
+  for a module-by-module breakdown.
+- **`examples/`**: a worked, runnable tutorial notebook demonstrating
+  the package end to end against a real LGA. See `examples/README.md`.
+- **`docs/`**: the standalone PDF reference document for this
+  submission (see "Documentation" below for the fuller, site-based
+  reference alongside it).
+- **`tests/`**: the offline unit test suite, plus the marked
+  integration test that hits live OSM. See `tests/README.md`.
+- **`visuals/`**: generated kepler.gl standalone HTML exports, written
+  here by `cli.py --preview` and `app.py`'s preview feature.
+- **`output/{lga_name}/`**: where every extraction run's actual
+  deliverables land, GeoJSON, Shapefile, `manifest.json`, and
+  `run_log.json`, one subfolder per LGA extracted.
+- **`cli.py`** and **`app.py`**, at the repository root: the two
+  user-facing entry points onto the package in `lga_extractor/`,
+  covered in "What it does" and "Try it" above.
 
 ## Architecture
 
@@ -232,8 +255,8 @@ pipeline itself depending on any UI framework. Full module-by-module
 breakdown, design decisions, and known limitations:
 **[`lga_extractor/README.md`](lga_extractor/README.md)**.
 
-**Downstream:** this tool's output — GeoJSON/Shapefile layers plus
-`manifest.json` — feeds directly into the sibling
+**Downstream:** this tool's output - GeoJSON/Shapefile layers plus
+`manifest.json` - feeds directly into the sibling
 **[akure-accessibility-dashboard](https://github.com/Mapkathon2026-UseOSM/akure-accessibility-dashboard)**
 repository's analysis pipeline, which reads `manifest.json` for its
 resolved CRS and per-layer status rather than re-deriving or
@@ -241,6 +264,27 @@ hardcoding either. `tests/test_cross_repo_integration.py` (in that
 repo) verifies this compatibility directly on every push via a
 dedicated cross-repo CI workflow, this isn't just an assumed contract
 between the two repos, it's tested.
+
+## Documentation
+
+Two layers of documentation exist for this project, at different depths:
+
+- **`docs/Nigerian_LGA_OSM_Extractor_Documentation.pdf`**, in this
+  repository: a standalone reference document covering the tool's
+  purpose, workflow, and output format, suitable for a reviewer who
+  wants the full picture without cloning the repo or reading source.
+- **[Documentation site](https://mapkathon2026-useosm.github.io/UseOSM_Mapkathon-Submission-documentation/lga-osm-extractor/overview/)**
+  ([source repo](https://github.com/Mapkathon2026-UseOSM/UseOSM_Mapkathon-Submission-documentation)),
+  a dedicated documentation site covering both submissions
+  (`lga-osm-extractor` and `akure-accessibility-dashboard`) in full
+  technical depth: repository architecture, design philosophy, a
+  module-by-module breakdown of every significant function and class
+  (what it does, why it was written that way, inputs/outputs, internal
+  workflow, assumptions, and complexity where relevant), and an
+  end-to-end walkthrough of what happens from process start to final
+  output for each repository. This is the right place to look for a
+  genuinely deep understanding of how the codebase works internally,
+  beyond what this README summarizes.
 
 ## Extraction manifest (`manifest.json`)
 
@@ -279,7 +323,7 @@ presence, an empty file, or a hardcoded assumption:
 ```
 
 `query_status` is always one of `"success"`, `"success_empty"`, or
-`"failed"` — an empty layer and a failed query never look identical,
+`"failed"` - an empty layer and a failed query never look identical,
 the way a bare empty GeoDataFrame did before this existed. See
 `lga_extractor/manifest.py`'s module docstring for the full schema and
 rationale.
@@ -287,11 +331,11 @@ rationale.
 ## Beyond Nigeria: a path to global generalization
 
 This tool is generalized across all 774 Nigerian LGAs, not just Akure
-North/South, today. It was not built to be Nigeria-only and several pieces 
-of its architecture already generalize further
-still, worth being explicit about exactly where that seam is, what's
-already portable, and what real work would remain to take this
-worldwide.
+North/South, today. It was not built to be Nigeria-only, and several
+pieces of its architecture already generalize further still. Worth
+being explicit about exactly where that seam is, what's already
+portable, and what real work would remain to take this worldwide,
+including concrete steps for actually doing it.
 
 **Already global, no changes needed.** `clean.py`'s
 `utm_epsg_for_longitude()` computes the correct metric coordinate
@@ -315,8 +359,8 @@ across dozens of functions, tests, docstrings, and output paths
 sweep (e.g. to `region_name`).
 
 **A genuinely hard problem, not a tweak.** `boundary.py`'s hard
-validation checks — `MIN_PLAUSIBLE_LGA_AREA_KM2` /
-`MAX_PLAUSIBLE_LGA_AREA_KM2` and the `NIGERIA_BBOX` geographic check —
+validation checks - `MIN_PLAUSIBLE_LGA_AREA_KM2` /
+`MAX_PLAUSIBLE_LGA_AREA_KM2` and the `NIGERIA_BBOX` geographic check -
 exist specifically to catch a wrongly resolved administrative
 boundary, and they work precisely because Nigerian LGAs occupy a
 known, narrow size band. That band isn't universal: a French commune
@@ -341,6 +385,61 @@ tool set out to serve. The architecture already points toward global
 generalization, what remains is one genuinely hard data problem and a
 set of mechanical renames, not a redesign.
 
+### How to actually adapt this for another country
+
+Concretely, adapting this tool for a country outside Nigeria means
+touching a small, specific set of places, not rewriting the pipeline.
+In rough order of effort:
+
+1. **Swap the country string and hierarchy in the Nominatim query.**
+   `boundary.resolve_boundary()`'s query-building line
+   (`f"{lga_name}, {state_name}, Nigeria"`) is the single hardcoded
+   entry point. For a two-level hierarchy elsewhere (e.g. a Kenyan
+   county and ward), the same pattern works with the country name and
+   field labels swapped. For a country with a different administrative
+   depth (a single-level query, like a French commune with no
+   intermediate parent, or a three-level one), the function needs to
+   accept a variable-length list of parent-area qualifiers and join
+   them, rather than assuming exactly two.
+
+2. **Supply a country + admin-level size-band reference table**, rather
+   than the current single hardcoded `MIN_PLAUSIBLE_LGA_AREA_KM2` /
+   `MAX_PLAUSIBLE_LGA_AREA_KM2` pair. This is the one piece of real,
+   non-mechanical work: a small lookup (country code, target
+   `admin_level`) to (min km², max km²), populated from a public source
+   such as GADM or a national statistics agency, with the current
+   Nigerian LGA band kept as one entry among many rather than the only
+   entry. `NIGERIA_BBOX`'s geographic sanity check generalizes the same
+   way, as a per-country bounding box looked up by country code instead
+   of one constant.
+
+3. **Rename `lga_name` to a neutral term** (e.g. `region_name`) across
+   `boundary.py`, `pipeline.py`, `cli.py`, `app.py`, their tests, and
+   the `output/{lga_name}/` path convention, a mechanical,
+   find-and-replace-safe change with no logic implications, since the
+   parameter is only ever used as an opaque string passed to Nominatim
+   and to a filesystem path.
+
+4. **Leave `clean.py`, `layers.py`, `export.py`, `manifest.py`,
+   `events.py`, `logging_utils.py`, and `visualize.py` untouched.**
+   None of these six modules contain a Nigeria-specific assumption:
+   `utm_epsg_for_longitude()` is a pure function of latitude/longitude
+   anywhere on Earth; the six default OSM layers and their tag filters
+   (`highway=*`, `amenity=hospital/clinic/pharmacy`, etc.) are standard
+   global OpenStreetMap tagging conventions, present in OSM data for
+   most countries; the manifest schema, event system, retry/backoff
+   logic, and Shapefile/GeoJSON export split are all geography-agnostic
+   by construction. A generalized fork of this tool would still import
+   these seven modules directly, unmodified.
+
+In short: this codebase was deliberately built with its
+country-specific logic concentrated in one function
+(`boundary.resolve_boundary()`) rather than scattered throughout the
+pipeline, specifically so that generalizing it later is a matter of
+extending that one function's inputs and supplying real reference
+data, not restructuring the seven other modules that already work
+anywhere.
+
 ## License
 
 Code: see `LICENSE`.
@@ -354,7 +453,9 @@ OpenStreetMap Engineering Working Group.
 
 - UseOSM: https://www.useosm.org/en/
 - Map<>kathon 2026 event page: https://www.useosm.org/en/community-events/mapkaton-2026
-- Sibling submission: [akure-accessibility-dashboard](https://github.com/Mapkathon2026-UseOSM/akure-accessibility-dashboard) — https://akure-accessibility-dashboard-analysis.streamlit.app/
+- Sibling submission: [akure-accessibility-dashboard](https://github.com/Mapkathon2026-UseOSM/akure-accessibility-dashboard), https://akure-accessibility-dashboard-analysis.streamlit.app/
+- Documentation site: https://mapkathon2026-useosm.github.io/UseOSM_Mapkathon-Submission-documentation/lga-osm-extractor/overview/
+- Documentation site source repo: https://github.com/Mapkathon2026-UseOSM/UseOSM_Mapkathon-Submission-documentation
 
 ## AI Disclosure
 
@@ -373,7 +474,7 @@ development of `lga-osm-extractor`, across multiple sessions.
 Claude assisted with the following, mapped to the actual modules in
 this repository:
 
-- **Pipeline structure and orchestration** — `lga_extractor/pipeline.py`'s
+- **Pipeline structure and orchestration** - `lga_extractor/pipeline.py`'s
   `extract_lga()`, the single function that wires
   `boundary.resolve_boundary()` → `layers.extract_layers()` →
   `clean.clean_layers()` → `export.export_layers()` →
@@ -384,7 +485,7 @@ this repository:
   separate, single-purpose files) and the CLI/config design (`cli.py`'s
   argparse interface, `app.py`'s Streamlit form and live progress UI).
 
-- **Boundary resolution and validation** — `boundary.py`'s
+- **Boundary resolution and validation** - `boundary.py`'s
   `resolve_boundary()` and `_validate_and_standardize()`: the two-tier
   hard/soft validation scheme (hard checks that raise
   `BoundaryResolutionError` when a centroid falls outside
@@ -395,7 +496,7 @@ this repository:
   vs. an entire state/country being returned by Nominatim, and OSM's
   inconsistent `admin_level` tagging across different LGAs).
 
-- **Auto-CRS selection logic** — `clean.py`'s
+- **Auto-CRS selection logic** - `clean.py`'s
   `utm_epsg_for_longitude()` and `resolve_target_crs()`: implementing
   and debugging the logic that auto-selects the correct UTM zone
   (31N/32N/33N, covering all of Nigeria) from a resolved boundary's
@@ -406,7 +507,7 @@ this repository:
   a downstream consumer (the sibling dashboard's `data_contract.py`),
   not silently re-assumed there.
 
-- **Richer OSM semantic schema** — `clean.py`'s `SEMANTIC_COLUMNS`
+- **Richer OSM semantic schema** - `clean.py`'s `SEMANTIC_COLUMNS`
   (curated per-layer tag lists) and `RAW_TAGS_COLUMN` (a JSON-encoded
   fallback capturing every original OSM tag), replacing the previous
   osmid/name/geometry-only schema, plus `export.py`'s deliberate
@@ -414,7 +515,7 @@ this repository:
   Shapefile kept to the core schema to avoid silent DBF field-name
   truncation/collisions on the longer semantic column names).
 
-- **Formal extraction manifest** — `manifest.py`'s `build_manifest()`
+- **Formal extraction manifest** - `manifest.py`'s `build_manifest()`
   and `write_manifest()`: reconciling `layers.py`'s per-layer
   query-time status (success / success_empty / failed, with attempt
   counts and messages) with `export.py`'s post-cleaning export
@@ -422,7 +523,7 @@ this repository:
   downstream consumer never has to infer "did this fail" from an
   ambiguous empty GeoDataFrame.
 
-- **Strict vs. permissive extraction modes** — `layers.py`'s
+- **Strict vs. permissive extraction modes** - `layers.py`'s
   `extract_layers()` and `_extract_single_layer()`: designing the
   distinction between a genuine query failure (`LayerExtractionError`
   in strict mode) and a query that succeeds but legitimately finds
@@ -433,7 +534,7 @@ this repository:
   concurrency caused OSM's public Overpass mirror to refuse every
   connection outright.
 
-- **Overpass mirror rotation and bounded boundary resolution** —
+- **Overpass mirror rotation and bounded boundary resolution** -
   `layers.py`'s `OVERPASS_MIRRORS` rotation (switch mirrors after 2
   consecutive failures against one, rather than retrying a server with
   no reason to unblock soon) and `boundary.py`'s
@@ -442,14 +543,14 @@ this repository:
   from a frozen app in a live UI). Both mutate a shared `osmnx` global
   (`overpass_url`, `requests_timeout` respectively) rather than a
   per-request parameter, so both are lock-protected against the
-  concurrent worker threads that query layers in parallel — a first
+  concurrent worker threads that query layers in parallel - a first
   version of the boundary-timeout lock had a real, narrow race (reading
   the "original" value to restore *outside* the lock, letting one
   thread capture another's temporary value), caught by a dedicated
   concurrency test before shipping, see `lga_extractor/README.md` for
   the full account.
 
-- **UI-agnostic progress events** — `events.py`'s event schema
+- **UI-agnostic progress events** - `events.py`'s event schema
   (`stage_started` / `retry` / `stage_completed` / `stage_failed` /
   `pipeline_completed`) and `ThreadSafeEventQueue`, designed so
   `layers.py`/`pipeline.py` can emit live progress from concurrent
@@ -458,21 +559,21 @@ this repository:
   a `st.status()`-based live checklist, retry counters, and a
   post-extraction summary table.
 
-- **Results persistence across Streamlit reruns** — `app.py`'s
+- **Results persistence across Streamlit reruns** - `app.py`'s
   extraction-results section (map, summary, download button) is now
   stored in `st.session_state` and rendered inside an `st.fragment`,
   fixing a real bug: clicking the Download button itself triggers a
   Streamlit script rerun (as any widget interaction does), and since
   the results section previously only rendered inside
-  `if submitted:` — true only for the exact run the form's submit
-  click caused — clicking Download made the whole results section,
+  `if submitted:` - true only for the exact run the form's submit
+  click caused - clicking Download made the whole results section,
   including the download button itself, disappear on the very next
   rerun. Requires `streamlit>=1.37` (`st.fragment`'s stable,
   non-experimental name), the dependency floor was bumped from `>=1.32`
   alongside this fix, `>=1.32` would still technically satisfy the old
   constraint on an install where `st.fragment` doesn't exist yet.
 
-- **kepler.gl preview map helper and credential hygiene** —
+- **kepler.gl preview map helper and credential hygiene** -
   `visualize.py`'s `build_preview_map()` and `_strip_mapbox_token()`:
   the lazy `keplergl` import (so the rest of the package stays
   importable even if `keplergl`'s own `pkg_resources`/`setuptools`
