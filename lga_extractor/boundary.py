@@ -8,28 +8,91 @@ relations, with a manual-boundary fallback path.
 
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry.base import BaseGeometry
 import osmnx as ox
 
-# Boundary resolution is a single, unretried, unbounded-by-default
-# call to OSM's Nominatim geocoder (osmnx.geocode_to_gdf()), which has
-# its own strict 1-request/second usage policy and can throttle under
-# shared load (e.g. many Streamlit Cloud sessions on the same
-# outbound IP). Without an explicit timeout, osmnx's own default
-# request timeout (ox.settings.requests_timeout, 180s by default)
-# governs how long a single attempt can hang before even raising an
-# error, which reads as "frozen" to a live progress UI even though
-# it's technically still working. These two constants bound that: a
-# shorter per-attempt timeout (so a slow moment fails fast) plus a
-# small number of retries with backoff (mirroring layers.py's Overpass
-# retry logic), so a single transient Nominatim slowdown doesn't cost
-# several minutes of apparent hang.
+# Boundary resolution calls OSM's Nominatim geocoder (osmnx.geocode_to_gdf()).
+# Two independent things can make a single attempt run far longer than
+# BOUNDARY_REQUEST_TIMEOUT_SECONDS would suggest:
+#
+#   1. ox.settings.requests_timeout only bounds a single underlying HTTP
+#      request. It does NOT bound the overall call, because...
+#   2. ...osmnx's own Nominatim client (osmnx/_nominatim.py) handles HTTP
+#      429 (rate-limited) and 504 (gateway timeout) responses by sleeping
+#      55 seconds and then recursively re-issuing the request, with no
+#      retry cap and no exception ever raised for this case. On shared
+#      infrastructure (e.g. many Streamlit Cloud apps behind the same
+#      outbound IP hitting Nominatim's public instance), this recursion
+#      is what actually produces multi-minute "stuck" progress bars: the
+#      call is technically still running, just invisibly retrying inside
+#      a library we don't control, well past our own timeout setting.
+#
+# Because that internal retry never raises, our OWN retry loop below
+# can't rely on catching an exception to know an attempt is taking too
+# long -- we have to enforce a hard WALL-CLOCK timeout around the entire
+# call ourselves (see _geocode_with_hard_timeout()), independent of
+# whatever osmnx is doing internally.
 BOUNDARY_REQUEST_TIMEOUT_SECONDS = 30
 BOUNDARY_MAX_RETRIES = 3
 BOUNDARY_RETRY_BACKOFF_BASE_SECONDS = 5
+
+# Wall-clock cap (seconds) for one resolve attempt, enforced by running
+# the call in a worker thread and giving up on waiting for it after this
+# many seconds -- regardless of what osmnx is doing internally (see the
+# 429/504 recursion note above). This is intentionally larger than
+# BOUNDARY_REQUEST_TIMEOUT_SECONDS: a single legitimate slow-but-successful
+# Nominatim response should still be allowed to complete, but an attempt
+# stuck in osmnx's internal 55s-pause retry loop should not be allowed to
+# consume many minutes before we even notice.
+#
+# Note: Python cannot forcibly kill a running thread. If an attempt times
+# out, the worker thread is abandoned (left to finish or fail on its own)
+# and we move on to the next attempt/failure rather than waiting on it --
+# this bounds *our* wait, not the abandoned thread's actual lifetime.
+BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS = 45
+
+# A descriptive User-Agent (and, ideally, contact info) is expected by
+# Nominatim's usage policy and can reduce how aggressively a shared/generic
+# client identity gets rate-limited. osmnx passes this through via
+# ox.settings.requests_kwargs on every HTTP request it makes (Nominatim and
+# Overpass alike).
+NOMINATIM_USER_AGENT = "lga-osm-extractor/1.0 (Map<>kathon 2026; contact via GitHub Mapkathon2026-UseOSM)"
+
+
+def _geocode_with_hard_timeout(query: str, timeout_seconds: float):
+    """
+    Call ox.geocode_to_gdf(query) but never wait longer than
+    timeout_seconds for it to return, regardless of what osmnx is doing
+    internally (including its own unbounded 429/504 retry recursion, see
+    the module-level note above).
+
+    Raises
+    ------
+    FutureTimeoutError
+        If the call has not completed within timeout_seconds. The
+        underlying worker thread is NOT cancelled (Python threads can't
+        be force-killed) -- it is simply abandoned and left to finish or
+        error out on its own, unobserved.
+    Exception
+        Whatever ox.geocode_to_gdf() itself raised, if it completed
+        (unsuccessfully) within the timeout.
+    """
+    # Deliberately NOT using ThreadPoolExecutor as a context manager here:
+    # `with` calls executor.shutdown(wait=True) on exit, which would block
+    # until the worker thread finishes -- exactly the multi-minute wait
+    # we're trying to avoid. Instead we shut down with wait=False, which
+    # lets the (possibly still-hung) worker thread be abandoned in the
+    # background while this function returns/raises immediately.
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(ox.geocode_to_gdf, query)
+        return future.result(timeout=timeout_seconds)
+    finally:
+        executor.shutdown(wait=False)
 
 # ox.settings.requests_timeout is a single shared, mutable global inside
 # osmnx, not a per-call parameter (see layers.py's OVERPASS_MIRRORS /
@@ -165,12 +228,34 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
     # before the `with` statement, which is exactly this race.)
     with _BOUNDARY_TIMEOUT_LOCK:
         original_timeout = ox.settings.requests_timeout
+        original_requests_kwargs = dict(ox.settings.requests_kwargs)
         try:
             ox.settings.requests_timeout = BOUNDARY_REQUEST_TIMEOUT_SECONDS
+            # Merge in a descriptive User-Agent without clobbering any
+            # other requests_kwargs (proxies, auth, etc.) the caller may
+            # have already configured elsewhere.
+            merged_headers = dict(original_requests_kwargs.get("headers", {}))
+            merged_headers.setdefault("User-Agent", NOMINATIM_USER_AGENT)
+            ox.settings.requests_kwargs = {
+                **original_requests_kwargs,
+                "headers": merged_headers,
+            }
             for attempt in range(1, BOUNDARY_MAX_RETRIES + 1):
                 try:
-                    gdf = ox.geocode_to_gdf(query)
+                    gdf = _geocode_with_hard_timeout(
+                        query, timeout_seconds=BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS
+                    )
                     break
+                except FutureTimeoutError as exc:
+                    last_exc = BoundaryResolutionError(
+                        f"OSM boundary lookup for '{query}' did not complete within "
+                        f"{BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS}s (this most likely "
+                        f"means Nominatim is rate-limiting this request and osmnx is "
+                        f"retrying internally; see boundary.py module docstring)."
+                    )
+                    if attempt < BOUNDARY_MAX_RETRIES:
+                        time.sleep(BOUNDARY_RETRY_BACKOFF_BASE_SECONDS * attempt)
+                        continue
                 except Exception as exc:
                     last_exc = exc
                     if attempt < BOUNDARY_MAX_RETRIES:
@@ -178,11 +263,12 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
                         continue
         finally:
             ox.settings.requests_timeout = original_timeout
+            ox.settings.requests_kwargs = original_requests_kwargs
 
     if gdf is None:
         raise BoundaryResolutionError(
             f"OSM boundary lookup failed for query '{query}' after {BOUNDARY_MAX_RETRIES} "
-            f"attempt(s) (each capped at {BOUNDARY_REQUEST_TIMEOUT_SECONDS}s). "
+            f"attempt(s) (each capped at {BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS}s wall-clock). "
             f"Consider supplying manual_boundary_path. Original error: {last_exc}"
         ) from last_exc
 
