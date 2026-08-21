@@ -15,6 +15,8 @@ import pandas as pd
 from shapely.geometry.base import BaseGeometry
 import osmnx as ox
 
+from .boundary_cache import get_cached_boundary, save_boundary_to_cache
+
 # Boundary resolution calls OSM's Nominatim geocoder (osmnx.geocode_to_gdf()).
 # Two independent things can make a single attempt run far longer than
 # BOUNDARY_REQUEST_TIMEOUT_SECONDS would suggest:
@@ -57,9 +59,14 @@ BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS = 45
 
 # A descriptive User-Agent (and, ideally, contact info) is expected by
 # Nominatim's usage policy and can reduce how aggressively a shared/generic
-# client identity gets rate-limited. osmnx passes this through via
-# ox.settings.requests_kwargs on every HTTP request it makes (Nominatim and
-# Overpass alike).
+# client identity gets rate-limited. osmnx exposes this via the dedicated
+# ox.settings.http_user_agent setting (applied to every HTTP request it
+# makes, Nominatim and Overpass alike) -- NOT via requests_kwargs, which
+# would collide with the `headers` kwarg osmnx already passes explicitly
+# to requests.get() internally (osmnx/_nominatim.py builds its own headers
+# dict via _http._get_http_headers() and passes it as a named argument
+# alongside **requests_kwargs, so a "headers" key inside requests_kwargs
+# raises a duplicate-keyword TypeError rather than merging).
 NOMINATIM_USER_AGENT = "lga-osm-extractor/1.0 (Map<>kathon 2026; contact via GitHub Mapkathon2026-UseOSM)"
 
 
@@ -181,7 +188,21 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
     manual_boundary_path : str, optional
         Path to a GeoJSON/Shapefile boundary to use instead of querying
         OSM directly. Use this when OSM boundary data for the LGA is
-        missing, incomplete, or mistagged.
+        missing, incomplete, or mistagged. Note: this path bypasses the
+        on-disk boundary cache entirely (neither read from nor written
+        to it) -- a manually-supplied boundary is assumed to be a
+        deliberate one-off override, not something to cache and silently
+        reuse for future calls that didn't ask for it.
+
+    Notes
+    -----
+    Every successful OSM resolution is transparently cached to disk
+    (see boundary_cache.py) keyed by normalized (lga_name, state_name),
+    and every call first checks that cache before touching the network.
+    Since Nigeria's ~774 LGA boundaries essentially never change, this
+    means repeat lookups for the same LGA -- common during development,
+    or across concurrent users hitting the same popular LGA on a shared
+    deployment -- never hit Nominatim again after the first resolution.
 
     Returns
     -------
@@ -212,6 +233,23 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
             gdf, source=f"manual:{manual_boundary_path}", lga_name=lga_name, state_name=state_name
         )
 
+    # Cache check: Nigeria's ~774 LGAs are a fixed set whose administrative
+    # boundaries essentially never change, so a previously-resolved
+    # boundary can be reused indefinitely without ever re-querying
+    # Nominatim. This is checked before any network activity below, and is
+    # what actually sidesteps the Nominatim rate-limiting/retry-recursion
+    # issue for repeat lookups (see this module's docstring) rather than
+    # just handling it more gracefully.
+    cached_gdf = get_cached_boundary(lga_name, state_name)
+    if cached_gdf is not None:
+        cache_label = f"{lga_name}, {state_name}" if state_name else lga_name
+        return _validate_and_standardize(
+            cached_gdf,
+            source=f"cache:{cache_label}",
+            lga_name=lga_name,
+            state_name=state_name,
+        )
+
     query = f"{lga_name}, {state_name}, Nigeria" if state_name else f"{lga_name}, Nigeria"
 
     last_exc = None
@@ -228,18 +266,10 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
     # before the `with` statement, which is exactly this race.)
     with _BOUNDARY_TIMEOUT_LOCK:
         original_timeout = ox.settings.requests_timeout
-        original_requests_kwargs = dict(ox.settings.requests_kwargs)
+        original_user_agent = ox.settings.http_user_agent
         try:
             ox.settings.requests_timeout = BOUNDARY_REQUEST_TIMEOUT_SECONDS
-            # Merge in a descriptive User-Agent without clobbering any
-            # other requests_kwargs (proxies, auth, etc.) the caller may
-            # have already configured elsewhere.
-            merged_headers = dict(original_requests_kwargs.get("headers", {}))
-            merged_headers.setdefault("User-Agent", NOMINATIM_USER_AGENT)
-            ox.settings.requests_kwargs = {
-                **original_requests_kwargs,
-                "headers": merged_headers,
-            }
+            ox.settings.http_user_agent = NOMINATIM_USER_AGENT
             for attempt in range(1, BOUNDARY_MAX_RETRIES + 1):
                 try:
                     gdf = _geocode_with_hard_timeout(
@@ -263,7 +293,7 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
                         continue
         finally:
             ox.settings.requests_timeout = original_timeout
-            ox.settings.requests_kwargs = original_requests_kwargs
+            ox.settings.http_user_agent = original_user_agent
 
     if gdf is None:
         raise BoundaryResolutionError(
@@ -278,7 +308,15 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
             f"This LGA may be missing or mistagged in OSM; consider a manual boundary."
         )
 
-    return _validate_and_standardize(gdf, source=f"osm_geocode:{query}", lga_name=lga_name, state_name=state_name)
+    result = _validate_and_standardize(gdf, source=f"osm_geocode:{query}", lga_name=lga_name, state_name=state_name)
+
+    # Best-effort cache write: failures here (e.g. read-only filesystem)
+    # must never fail an otherwise-successful resolution, hence
+    # save_boundary_to_cache() swallows its own errors and just returns
+    # False on failure -- nothing to check here.
+    save_boundary_to_cache(result, lga_name, state_name)
+
+    return result
 
 
 def _validate_and_standardize(
