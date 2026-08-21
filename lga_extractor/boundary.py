@@ -8,98 +8,28 @@ relations, with a manual-boundary fallback path.
 
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry.base import BaseGeometry
 import osmnx as ox
 
-from .boundary_cache import get_cached_boundary, save_boundary_to_cache
-
-# Boundary resolution calls OSM's Nominatim geocoder (osmnx.geocode_to_gdf()).
-# Two independent things can make a single attempt run far longer than
-# BOUNDARY_REQUEST_TIMEOUT_SECONDS would suggest:
-#
-#   1. ox.settings.requests_timeout only bounds a single underlying HTTP
-#      request. It does NOT bound the overall call, because...
-#   2. ...osmnx's own Nominatim client (osmnx/_nominatim.py) handles HTTP
-#      429 (rate-limited) and 504 (gateway timeout) responses by sleeping
-#      55 seconds and then recursively re-issuing the request, with no
-#      retry cap and no exception ever raised for this case. On shared
-#      infrastructure (e.g. many Streamlit Cloud apps behind the same
-#      outbound IP hitting Nominatim's public instance), this recursion
-#      is what actually produces multi-minute "stuck" progress bars: the
-#      call is technically still running, just invisibly retrying inside
-#      a library we don't control, well past our own timeout setting.
-#
-# Because that internal retry never raises, our OWN retry loop below
-# can't rely on catching an exception to know an attempt is taking too
-# long -- we have to enforce a hard WALL-CLOCK timeout around the entire
-# call ourselves (see _geocode_with_hard_timeout()), independent of
-# whatever osmnx is doing internally.
+# Boundary resolution is a single, unretried, unbounded-by-default
+# call to OSM's Nominatim geocoder (osmnx.geocode_to_gdf()), which has
+# its own strict 1-request/second usage policy and can throttle under
+# shared load (e.g. many Streamlit Cloud sessions on the same
+# outbound IP). Without an explicit timeout, osmnx's own default
+# request timeout (ox.settings.requests_timeout, 180s by default)
+# governs how long a single attempt can hang before even raising an
+# error, which reads as "frozen" to a live progress UI even though
+# it's technically still working. These two constants bound that: a
+# shorter per-attempt timeout (so a slow moment fails fast) plus a
+# small number of retries with backoff (mirroring layers.py's Overpass
+# retry logic), so a single transient Nominatim slowdown doesn't cost
+# several minutes of apparent hang.
 BOUNDARY_REQUEST_TIMEOUT_SECONDS = 30
 BOUNDARY_MAX_RETRIES = 3
 BOUNDARY_RETRY_BACKOFF_BASE_SECONDS = 5
-
-# Wall-clock cap (seconds) for one resolve attempt, enforced by running
-# the call in a worker thread and giving up on waiting for it after this
-# many seconds -- regardless of what osmnx is doing internally (see the
-# 429/504 recursion note above). This is intentionally larger than
-# BOUNDARY_REQUEST_TIMEOUT_SECONDS: a single legitimate slow-but-successful
-# Nominatim response should still be allowed to complete, but an attempt
-# stuck in osmnx's internal 55s-pause retry loop should not be allowed to
-# consume many minutes before we even notice.
-#
-# Note: Python cannot forcibly kill a running thread. If an attempt times
-# out, the worker thread is abandoned (left to finish or fail on its own)
-# and we move on to the next attempt/failure rather than waiting on it --
-# this bounds *our* wait, not the abandoned thread's actual lifetime.
-BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS = 45
-
-# A descriptive User-Agent (and, ideally, contact info) is expected by
-# Nominatim's usage policy and can reduce how aggressively a shared/generic
-# client identity gets rate-limited. osmnx exposes this via the dedicated
-# ox.settings.http_user_agent setting (applied to every HTTP request it
-# makes, Nominatim and Overpass alike) -- NOT via requests_kwargs, which
-# would collide with the `headers` kwarg osmnx already passes explicitly
-# to requests.get() internally (osmnx/_nominatim.py builds its own headers
-# dict via _http._get_http_headers() and passes it as a named argument
-# alongside **requests_kwargs, so a "headers" key inside requests_kwargs
-# raises a duplicate-keyword TypeError rather than merging).
-NOMINATIM_USER_AGENT = "lga-osm-extractor/1.0 (Map<>kathon 2026; contact via GitHub Mapkathon2026-UseOSM)"
-
-
-def _geocode_with_hard_timeout(query: str, timeout_seconds: float):
-    """
-    Call ox.geocode_to_gdf(query) but never wait longer than
-    timeout_seconds for it to return, regardless of what osmnx is doing
-    internally (including its own unbounded 429/504 retry recursion, see
-    the module-level note above).
-
-    Raises
-    ------
-    FutureTimeoutError
-        If the call has not completed within timeout_seconds. The
-        underlying worker thread is NOT cancelled (Python threads can't
-        be force-killed) -- it is simply abandoned and left to finish or
-        error out on its own, unobserved.
-    Exception
-        Whatever ox.geocode_to_gdf() itself raised, if it completed
-        (unsuccessfully) within the timeout.
-    """
-    # Deliberately NOT using ThreadPoolExecutor as a context manager here:
-    # `with` calls executor.shutdown(wait=True) on exit, which would block
-    # until the worker thread finishes -- exactly the multi-minute wait
-    # we're trying to avoid. Instead we shut down with wait=False, which
-    # lets the (possibly still-hung) worker thread be abandoned in the
-    # background while this function returns/raises immediately.
-    executor = ThreadPoolExecutor(max_workers=1)
-    try:
-        future = executor.submit(ox.geocode_to_gdf, query)
-        return future.result(timeout=timeout_seconds)
-    finally:
-        executor.shutdown(wait=False)
 
 # ox.settings.requests_timeout is a single shared, mutable global inside
 # osmnx, not a per-call parameter (see layers.py's OVERPASS_MIRRORS /
@@ -188,21 +118,7 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
     manual_boundary_path : str, optional
         Path to a GeoJSON/Shapefile boundary to use instead of querying
         OSM directly. Use this when OSM boundary data for the LGA is
-        missing, incomplete, or mistagged. Note: this path bypasses the
-        on-disk boundary cache entirely (neither read from nor written
-        to it) -- a manually-supplied boundary is assumed to be a
-        deliberate one-off override, not something to cache and silently
-        reuse for future calls that didn't ask for it.
-
-    Notes
-    -----
-    Every successful OSM resolution is transparently cached to disk
-    (see boundary_cache.py) keyed by normalized (lga_name, state_name),
-    and every call first checks that cache before touching the network.
-    Since Nigeria's ~774 LGA boundaries essentially never change, this
-    means repeat lookups for the same LGA -- common during development,
-    or across concurrent users hitting the same popular LGA on a shared
-    deployment -- never hit Nominatim again after the first resolution.
+        missing, incomplete, or mistagged.
 
     Returns
     -------
@@ -233,23 +149,6 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
             gdf, source=f"manual:{manual_boundary_path}", lga_name=lga_name, state_name=state_name
         )
 
-    # Cache check: Nigeria's ~774 LGAs are a fixed set whose administrative
-    # boundaries essentially never change, so a previously-resolved
-    # boundary can be reused indefinitely without ever re-querying
-    # Nominatim. This is checked before any network activity below, and is
-    # what actually sidesteps the Nominatim rate-limiting/retry-recursion
-    # issue for repeat lookups (see this module's docstring) rather than
-    # just handling it more gracefully.
-    cached_gdf = get_cached_boundary(lga_name, state_name)
-    if cached_gdf is not None:
-        cache_label = f"{lga_name}, {state_name}" if state_name else lga_name
-        return _validate_and_standardize(
-            cached_gdf,
-            source=f"cache:{cache_label}",
-            lga_name=lga_name,
-            state_name=state_name,
-        )
-
     query = f"{lga_name}, {state_name}, Nigeria" if state_name else f"{lga_name}, Nigeria"
 
     last_exc = None
@@ -266,26 +165,12 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
     # before the `with` statement, which is exactly this race.)
     with _BOUNDARY_TIMEOUT_LOCK:
         original_timeout = ox.settings.requests_timeout
-        original_user_agent = ox.settings.http_user_agent
         try:
             ox.settings.requests_timeout = BOUNDARY_REQUEST_TIMEOUT_SECONDS
-            ox.settings.http_user_agent = NOMINATIM_USER_AGENT
             for attempt in range(1, BOUNDARY_MAX_RETRIES + 1):
                 try:
-                    gdf = _geocode_with_hard_timeout(
-                        query, timeout_seconds=BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS
-                    )
+                    gdf = ox.geocode_to_gdf(query)
                     break
-                except FutureTimeoutError as exc:
-                    last_exc = BoundaryResolutionError(
-                        f"OSM boundary lookup for '{query}' did not complete within "
-                        f"{BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS}s (this most likely "
-                        f"means Nominatim is rate-limiting this request and osmnx is "
-                        f"retrying internally; see boundary.py module docstring)."
-                    )
-                    if attempt < BOUNDARY_MAX_RETRIES:
-                        time.sleep(BOUNDARY_RETRY_BACKOFF_BASE_SECONDS * attempt)
-                        continue
                 except Exception as exc:
                     last_exc = exc
                     if attempt < BOUNDARY_MAX_RETRIES:
@@ -293,12 +178,11 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
                         continue
         finally:
             ox.settings.requests_timeout = original_timeout
-            ox.settings.http_user_agent = original_user_agent
 
     if gdf is None:
         raise BoundaryResolutionError(
             f"OSM boundary lookup failed for query '{query}' after {BOUNDARY_MAX_RETRIES} "
-            f"attempt(s) (each capped at {BOUNDARY_HARD_WALL_CLOCK_TIMEOUT_SECONDS}s wall-clock). "
+            f"attempt(s) (each capped at {BOUNDARY_REQUEST_TIMEOUT_SECONDS}s). "
             f"Consider supplying manual_boundary_path. Original error: {last_exc}"
         ) from last_exc
 
@@ -308,15 +192,7 @@ def resolve_boundary(lga_name: str, state_name: str = None, manual_boundary_path
             f"This LGA may be missing or mistagged in OSM; consider a manual boundary."
         )
 
-    result = _validate_and_standardize(gdf, source=f"osm_geocode:{query}", lga_name=lga_name, state_name=state_name)
-
-    # Best-effort cache write: failures here (e.g. read-only filesystem)
-    # must never fail an otherwise-successful resolution, hence
-    # save_boundary_to_cache() swallows its own errors and just returns
-    # False on failure -- nothing to check here.
-    save_boundary_to_cache(result, lga_name, state_name)
-
-    return result
+    return _validate_and_standardize(gdf, source=f"osm_geocode:{query}", lga_name=lga_name, state_name=state_name)
 
 
 def _validate_and_standardize(
