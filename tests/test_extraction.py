@@ -1375,3 +1375,14 @@ def test_extract_lga_end_to_end_live_osm():
         assert result["target_crs"] == "EPSG:32631"
     finally:
         shutil.rmtree(tmp_dir)
+
+
+def test_http_500_from_mirror_is_transient_and_rotates():
+    from lga_extractor.layers import _is_transient_connection_error
+    from osmnx._errors import ResponseStatusCodeError
+
+    msg500 = "'overpass.kumi.systems' responded: 500 Internal Server Error <html>"
+    assert _is_transient_connection_error(ResponseStatusCodeError(msg500))
+    assert not _is_transient_connection_error(
+        ResponseStatusCodeError("'x' responded: 400 Bad Request")
+    )

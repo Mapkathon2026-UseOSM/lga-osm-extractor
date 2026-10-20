@@ -1,10 +1,16 @@
-osmnx>=1.9
-geopandas>=0.14
-shapely>=2.0
-pyogrio>=0.7
-pandas>=2.0
-streamlit>=1.32
-leafmap>=0.31
+# Direct dependencies, pinned to the versions verified together in
+# requirements-lock.txt (osmnx 2.1.1 is what the app was last run with).
+# Pinning stops Streamlit Cloud from pulling brand-new releases on every
+# rebuild. To upgrade, change a pin, test locally, then redeploy.
+osmnx==2.1.1
+geopandas==1.1.4
+shapely==2.1.2
+pyogrio==0.13.0
+pandas==3.0.5
+numpy==2.5.1
+pyarrow==24.0.0
+streamlit==1.66.0
+leafmap==0.63.0
 pytest>=8.0
 
 # Optional, for the kepler.gl preview map (lga_extractor.visualize / --preview flag):

@@ -45,8 +45,8 @@ DEFAULT_TAG_CONFIG = {
 # rate-limited a client it's never talked to.
 OVERPASS_MIRRORS = [
     "https://overpass-api.de/api",
-    "https://overpass.kumi.systems/api",
     "https://overpass.private.coffee/api",
+    "https://overpass.kumi.systems/api",
 ]
 
 # osmnx exposes the Overpass endpoint as a single shared, mutable
@@ -91,7 +91,7 @@ REQUEST_STAGGER_SECONDS = 3
 # real chance of success. 4 gives the fallback mirror 2 attempts of
 # its own (rather than just 1), a little more room in case that
 # mirror also needs a moment to recover from a blip.
-MAX_RETRIES = 4
+MAX_RETRIES = 6
 RETRY_BACKOFF_BASE_SECONDS = 5
 
 
@@ -116,7 +116,23 @@ def _is_transient_connection_error(exc: Exception) -> bool:
     filter, which will just fail identically every time and shouldn't
     burn retry attempts.
     """
-    return isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
+    if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return True
+    # osmnx raises ResponseStatusCodeError (a ValueError) for an HTTP
+    # 5xx page from a mirror (e.g. "500 Internal Server Error"), and
+    # InsufficientResponseError for an empty/garbled body. These mean
+    # the server is overloaded or broken, not that the query is bad, so
+    # they must be retried / rotated to another mirror too. 4xx errors
+    # (a malformed query) are NOT transient and still fail fast.
+    name = type(exc).__name__
+    text = str(exc)
+    if name == "ResponseStatusCodeError":
+        import re
+        m = re.search(r"responded:?\s+(\d{3})", text)
+        return bool(m) and (m.group(1) == "429" or m.group(1).startswith("5"))
+    if name == "InsufficientResponseError":
+        return True
+    return False
 
 
 def _query_overpass(polygon, tags: dict, mirror_url: str):

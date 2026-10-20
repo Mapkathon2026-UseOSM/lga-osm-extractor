@@ -417,7 +417,14 @@ if submitted:
                     f"and the download below are unaffected."
                 )
             m.add_layer_control()
-            m.to_streamlit(height=600)
+            # leafmap's m.to_streamlit() uses st.components.v1.html, which
+            # Streamlit has deprecated. Render the folium map to an HTML
+            # string ourselves and embed it with st.iframe (the map HTML is
+            # generated here from our own data, never from user input).
+            if hasattr(st, "iframe"):
+                st.iframe(m.get_root().render(), height=600)
+            else:  # older Streamlit without st.iframe
+                m.to_streamlit(height=600)
 
             st.subheader("Download results")
             zip_buffer = io.BytesIO()
